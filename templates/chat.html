@@ -7,8 +7,8 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/common.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/chat.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/common.css') }}?v=6">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/chat.css') }}?v=3">
 </head>
 <body>
     <div class="container">
@@ -16,7 +16,9 @@
         <div class="header">
             <div class="header-left">
                 <button onclick="toggleConversationsSidebar()" class="menu-btn" title="Conversations">💬</button>
-                <h2>💙 Emotional AI Support</h2>
+                <a href="/" class="logo-link" title="Go to Homepage">
+                    <h2>💙 Emotional AI Support</h2>
+                </a>
             </div>
             <div class="header-right">
                 <button onclick="toggleDarkMode()" class="dark-mode-toggle" id="dark-mode-toggle" title="Toggle Dark Mode">
@@ -62,15 +64,6 @@
                         <h2 class="welcome-title">Hi! Are you feeling stressed?</h2>
                         <p class="welcome-subtitle">Come on, let me comfort you! 💛</p>
                         <p class="welcome-description">I'm here to listen and support you through whatever you're feeling.</p>
-                    </div>
-                </div>
-                
-                <!-- No Chat History Message -->
-                <div class="no-chat-history" id="no-chat-history" style="display: none;">
-                    <div class="no-chat-history-content">
-                        <div class="no-chat-history-icon">💬</div>
-                        <h3 class="no-chat-history-title">No chat history yet</h3>
-                        <p class="no-chat-history-description">Start a new conversation to begin chatting!</p>
                     </div>
                 </div>
                 

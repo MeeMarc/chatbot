@@ -143,3 +143,37 @@ html {
     }
 }
 
+/* Logo Link Styling */
+.logo-link {
+    text-decoration: none;
+    color: inherit;
+    display: inline-block;
+    cursor: pointer;
+    transition: opacity var(--transition-base), transform var(--transition-base);
+    outline: none;
+}
+
+.logo-link:hover {
+    opacity: 0.85;
+    transform: scale(1.02);
+}
+
+.logo-link:active {
+    transform: scale(0.98);
+}
+
+.logo-link:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 4px;
+    border-radius: 4px;
+}
+
+.logo-link h1,
+.logo-link h2 {
+    margin: 0;
+    display: inline-block;
+    pointer-events: none; /* Prevent double click events */
+    text-decoration: none !important; /* Remove any underline */
+    border-bottom: none !important; /* Remove any border */
+}
+

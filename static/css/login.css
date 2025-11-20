@@ -47,7 +47,8 @@
     flex-shrink: 0;
 }
 
-.login-header h1 {
+.login-header h1,
+.login-header .logo-link h1 {
     margin: 0 0 8px 0;
     font-family: 'Poppins', sans-serif;
     font-size: 36px;
@@ -61,6 +62,25 @@
     background-clip: text;
     position: relative;
     z-index: 1;
+    transition: all 0.3s ease;
+    text-decoration: none !important; /* Remove underline */
+    border-bottom: none !important; /* Remove border */
+}
+
+.login-header .logo-link {
+    cursor: pointer;
+    display: inline-block;
+    text-decoration: none !important; /* Remove underline */
+    border-bottom: none !important; /* Remove border */
+}
+
+.login-header .logo-link:hover h1 {
+    transform: scale(1.05);
+    filter: brightness(1.1);
+}
+
+.login-header .logo-link:active h1 {
+    transform: scale(0.98);
 }
 
 .login-subtitle {
@@ -687,7 +707,8 @@
         padding: 24px 16px 20px;
     }
     
-    .login-header h1 {
+    .login-header h1,
+    .login-header .logo-link h1 {
         font-size: 28px;
     }
     
@@ -760,7 +781,8 @@
         padding: 20px 12px 16px;
     }
     
-    .login-header h1 {
+    .login-header h1,
+    .login-header .logo-link h1 {
         font-size: 24px;
     }
     

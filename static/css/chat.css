@@ -123,12 +123,15 @@ body.dark-mode .container::before {
     z-index: 1;
 }
 
-.header-left h2 {
+.header-left h2,
+.header-left .logo-link h2 {
     margin: 0;
     font-family: 'Poppins', sans-serif;
     font-size: 20px;
     font-weight: 600;
     color: white;
+    text-decoration: none !important; /* Remove underline */
+    border-bottom: none !important; /* Remove border */
     text-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
 }
 
@@ -354,13 +357,16 @@ body.dark-mode .user-menu {
 
 /* Chat Container - Ensure it's above gradient */
 #chat {
-    flex: 1;
+    flex: 1 1 0%;
     background: var(--bg-light);
     overflow: hidden;
     display: flex;
     min-height: 0;
     position: relative;
     z-index: 1; /* Above container gradient */
+    height: 100%;
+    max-height: 100%;
+    align-items: stretch;
 }
 
 /* Chat main area - ensure proper layout */
@@ -903,8 +909,16 @@ body.dark-mode .no-chat-history-content {
     border-right: 1px solid var(--border-color);
     display: flex;
     flex-direction: column;
+    height: 100%;
     max-height: 100%;
     overflow: hidden;
+    min-height: 0;
+    flex-shrink: 0;
+    position: relative;
+    align-self: stretch;
+    box-sizing: border-box;
+    /* Ensure sidebar takes full height and list can scroll */
+    align-items: stretch;
 }
 
 .conversations-header {
@@ -914,6 +928,7 @@ body.dark-mode .no-chat-history-content {
     justify-content: space-between;
     align-items: center;
     background: var(--bg-light); /* Solid color instead of gradient */
+    flex-shrink: 0;
 }
 
 .conversations-header h3 {
@@ -941,9 +956,42 @@ body.dark-mode .no-chat-history-content {
 }
 
 .conversations-list {
-    flex: 1;
-    overflow-y: auto;
+    flex: 1 1 0%;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
     padding: 12px;
+    min-height: 0;
+    max-height: 100%;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    position: relative;
+    will-change: scroll-position;
+    scroll-behavior: smooth;
+}
+
+.conversations-list::-webkit-scrollbar {
+    width: 6px;
+}
+
+.conversations-list::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.conversations-list::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 3px;
+}
+
+.conversations-list::-webkit-scrollbar-thumb:hover {
+    background: var(--text-secondary);
+}
+
+body.dark-mode .conversations-list::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+}
+
+body.dark-mode .conversations-list::-webkit-scrollbar-thumb:hover {
+    background: var(--text-light);
 }
 
 .conversation-item {
@@ -1013,9 +1061,49 @@ body.dark-mode .conversation-item.active {
 
 .conversations-empty {
     text-align: center;
-    padding: 40px 20px;
+    padding: 48px 20px;
     color: var(--text-secondary);
-    font-size: 14px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 200px;
+}
+
+.conversations-empty-icon {
+    font-size: 48px;
+    margin-bottom: 16px;
+    opacity: 0.6;
+    display: block;
+}
+
+.conversations-empty-title {
+    font-family: 'Poppins', sans-serif;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0 0 8px 0;
+}
+
+.conversations-empty-description {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin: 0;
+    opacity: 0.8;
+    line-height: 1.5;
+    max-width: 220px;
+}
+
+body.dark-mode .conversations-empty-icon {
+    opacity: 0.7;
+}
+
+body.dark-mode .conversations-empty-title {
+    color: var(--text-primary);
+}
+
+body.dark-mode .conversations-empty-description {
+    color: var(--text-secondary);
 }
 
 /* Input Area */
@@ -1354,7 +1442,8 @@ body.dark-mode .tip-btn {
         padding: 12px 16px;
     }
     
-    .header-left h2 {
+    .header-left h2,
+    .header-left .logo-link h2 {
         font-size: 18px;
     }
     
@@ -1402,6 +1491,18 @@ body.dark-mode .tip-btn {
         left: 0;
         bottom: 0;
         z-index: 300;
+        height: 100vh;
+        max-height: 100vh;
+    }
+    
+    .conversations-list {
+        flex: 1 1 0% !important;
+        overflow-y: auto !important;
+        overflow-x: hidden !important;
+        min-height: 0 !important;
+        max-height: 100% !important;
+        -webkit-overflow-scrolling: touch !important;
+        scroll-behavior: smooth !important;
     }
     
     .messages {

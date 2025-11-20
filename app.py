@@ -26,7 +26,21 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__, 
             template_folder='templates',
             static_folder='static')
+
+# Enable template auto-reload in development
+app.config['TEMPLATES_AUTO_RELOAD'] = True
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0  # Disable file caching
+
 CORS(app)  # Enable CORS for all routes
+
+# Disable caching for static files in development
+@app.after_request
+def after_request(response):
+    if os.getenv('FLASK_ENV') == 'development' or os.getenv('NODE_ENV') == 'development' or True:  # Always disable cache for now
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, public, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
 
 # Configuration
 DATABASE_URL = os.getenv('DATABASE_URL')
@@ -40,6 +54,9 @@ db_pool = None
 def init_db_pool():
     """Initialize database connection pool"""
     global db_pool
+    if not DATABASE_URL:
+        logger.error("❌ DATABASE_URL environment variable is not set. Please create a .env file with DATABASE_URL=...")
+        return False
     try:
         db_pool = SimpleConnectionPool(
             minconn=1,
@@ -51,6 +68,7 @@ def init_db_pool():
         return True
     except Exception as e:
         logger.error(f"❌ Database connection error: {e}")
+        logger.error("Check that DATABASE_URL in .env file is correct")
         return False
 
 # Initialize pool on startup
@@ -58,6 +76,12 @@ init_db_pool()
 
 def get_db_connection():
     """Get a database connection from the pool"""
+    if not DATABASE_URL:
+        logger.error("DATABASE_URL environment variable is not set")
+        return None
+    if not db_pool:
+        logger.error("Database connection pool is not initialized. Check DATABASE_URL in .env file")
+        return None
     try:
         conn = db_pool.getconn()
         return conn
@@ -74,9 +98,13 @@ def return_db_connection(conn):
 
 def execute_query(query, params=None, fetch=True):
     """Execute a database query"""
+    if not DATABASE_URL:
+        raise Exception("DATABASE_URL environment variable is not set. Please create a .env file with your database connection string.")
     conn = get_db_connection()
     if not conn:
-        raise Exception("Database connection failed")
+        if not db_pool:
+            raise Exception("Database connection pool not initialized. Check DATABASE_URL in .env file")
+        raise Exception("Database connection failed. Check your DATABASE_URL and database server status.")
     
     try:
         # Ensure connection is not in autocommit mode
@@ -812,5 +840,7 @@ if __name__ == '__main__':
     logger.info(f"📝 API endpoints available at /api/*")
     logger.info(f"🌐 Frontend available at http://localhost:{PORT}/")
     
-    app.run(host='0.0.0.0', port=PORT, debug=(os.getenv('NODE_ENV') == 'development'))
+    # Enable debug mode and auto-reload for development
+    debug_mode = os.getenv('FLASK_ENV') == 'development' or os.getenv('NODE_ENV') == 'development' or True
+    app.run(host='0.0.0.0', port=PORT, debug=debug_mode, use_reloader=True, use_debugger=debug_mode)
 
