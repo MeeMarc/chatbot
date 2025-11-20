@@ -10,6 +10,7 @@ services:
         sync: false
       - key: JWT_SECRET
         generateValue: true
+      - key: PYTHON_VERSION
+        value: 3.12.7
       # PORT is automatically provided by Render
-      # PYTHON_VERSION is auto-detected, but can be specified if needed
 
