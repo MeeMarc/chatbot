@@ -36,10 +36,15 @@ CORS(app)  # Enable CORS for all routes
 # Disable caching for static files in development
 @app.after_request
 def after_request(response):
-    if os.getenv('FLASK_ENV') == 'development' or os.getenv('NODE_ENV') == 'development' or True:  # Always disable cache for now
+    is_dev = os.getenv('FLASK_ENV') == 'development' or os.getenv('NODE_ENV') == 'development'
+    if is_dev:
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, public, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
+    else:
+        # Production: Cache static files for 1 hour
+        if request.endpoint and request.endpoint.startswith('static'):
+            response.headers["Cache-Control"] = "public, max-age=3600"
     return response
 
 # Configuration
