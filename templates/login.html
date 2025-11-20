@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - Emotional AI Support</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/common.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/login.css') }}">
+</head>
+<body>
+    <!-- Toast Notification Container -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <div class="login-container">
+        <div class="login-header">
+            <h1>💙 Emotional AI Support</h1>
+            <p class="login-subtitle">Your Personal Guide for Emotional Well-being</p>
+        </div>
+        
+        <div class="login-content">
+            <div class="login-card">
+                <div class="login-card-header">
+                    <h2>Welcome Back! </h2>
+                    <p class="login-card-subtitle">Login to access your emotional support chat</p>
+                </div>
+                
+                <form class="login-form" onsubmit="handleLogin(event)">
+                    <div class="form-group">
+                        <label for="login-email" class="form-label">
+                            <span>Email</span>
+                        </label>
+                        <div class="input-wrapper">
+                            <span class="input-icon">📧</span>
+                            <input 
+                                type="email" 
+                                id="login-email" 
+                                class="form-input" 
+                                placeholder="your@email.com" 
+                                required
+                                autocomplete="email"
+                            >
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="login-password" class="form-label">
+                            <span>Password</span>
+                        </label>
+                        <div class="input-wrapper">
+                            <span class="input-icon">🔒</span>
+                            <input 
+                                type="password" 
+                                id="login-password" 
+                                class="form-input" 
+                                placeholder="••••••••" 
+                                required
+                                autocomplete="current-password"
+                            >
+                            <button 
+                                type="button" 
+                                class="password-toggle password-hidden" 
+                                id="login-password-toggle"
+                                onclick="togglePasswordVisibility('login-password', 'login-password-toggle')"
+                                title="Show/Hide Password"
+                            >
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="form-options">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="remember-me">
+                            <span>Remember me</span>
+                        </label>
+                    </div>
+                    
+                    <button type="submit" class="login-button">
+                        <span>Login</span>
+                        <span class="button-shine"></span>
+                    </button>
+                    
+                    <div class="login-divider">
+                        <span>or</span>
+                    </div>
+                    
+                    <button type="button" class="guest-button" onclick="signInAsGuest()">
+                        <span>👤 Sign in as Guest</span>
+                        <span class="button-shine"></span>
+                    </button>
+                    
+                    <div class="login-footer">
+                        <p>Don't have an account? <a href="/signup">Sign up</a></p>
+                    </div>
+                    
+                    <div id="login-error" class="error-message" style="display:none;"></div>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Toast Notification System
+        function showToast(type, title, message, duration = 5000) {
+            const container = document.getElementById('toast-container');
+            if (!container) return;
+            
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            
+            const icons = {
+                success: '✅',
+                error: '❌',
+                info: 'ℹ️'
+            };
+            
+            const durationSeconds = duration / 1000;
+            toast.innerHTML = `
+                <div class="toast-icon">${icons[type] || icons.info}</div>
+                <div class="toast-content">
+                    <div class="toast-title">${title}</div>
+                    <div class="toast-message">${message}</div>
+                </div>
+                <button class="toast-close" onclick="removeToast(this.parentElement)">×</button>
+                <div class="toast-progress">
+                    <div class="toast-progress-bar" style="--toast-duration: ${durationSeconds}s"></div>
+                </div>
+            `;
+            
+            container.appendChild(toast);
+            
+            // Auto-dismiss after duration
+            const timeout = setTimeout(() => {
+                removeToast(toast);
+            }, duration);
+            
+            // Pause on hover
+            toast.addEventListener('mouseenter', () => {
+                clearTimeout(timeout);
+                toast.querySelector('.toast-progress-bar').style.animationPlayState = 'paused';
+            });
+            
+            toast.addEventListener('mouseleave', () => {
+                const newTimeout = setTimeout(() => {
+                    removeToast(toast);
+                }, duration);
+                toast.querySelector('.toast-progress-bar').style.animationPlayState = 'running';
+            });
+        }
+        
+        function removeToast(toast) {
+            if (!toast) return;
+            toast.classList.add('hiding');
+            setTimeout(() => {
+                if (toast.parentElement) {
+                    toast.parentElement.removeChild(toast);
+                }
+            }, 300);
+        }
+        
+        // Toggle password visibility
+        function togglePasswordVisibility(inputId, toggleId) {
+            const input = document.getElementById(inputId);
+            const toggle = document.getElementById(toggleId);
+            
+            if (input && toggle) {
+                if (input.type === 'password') {
+                    input.type = 'text';
+                    toggle.classList.remove('password-hidden');
+                    toggle.setAttribute('aria-label', 'Hide password');
+                } else {
+                    input.type = 'password';
+                    toggle.classList.add('password-hidden');
+                    toggle.setAttribute('aria-label', 'Show password');
+                }
+            }
+        }
+        
+        // Login functionality
+        async function handleLogin(event) {
+            event.preventDefault();
+            
+            const email = document.getElementById('login-email').value.trim();
+            const password = document.getElementById('login-password').value;
+            const rememberMe = document.getElementById('remember-me').checked;
+            
+            // Hide old error message if visible
+            const errorDiv = document.getElementById('login-error');
+            if (errorDiv) errorDiv.style.display = 'none';
+            
+            try {
+                // Call API to login
+                const response = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ email, password })
+                });
+                
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    showToast('error', 'Login Failed', data.error || 'Invalid email or password. Please try again.');
+                    return;
+                }
+                
+                // Store user data and token
+                const user = data.user;
+                const token = data.token;
+                
+                localStorage.setItem('currentUser', JSON.stringify(user));
+                localStorage.setItem('authToken', token);
+                localStorage.setItem('isLoggedIn', 'true');
+                
+                if (rememberMe) {
+                    localStorage.setItem('rememberMe', 'true');
+                    localStorage.setItem('rememberedEmail', email);
+                } else {
+                    localStorage.removeItem('rememberMe');
+                    localStorage.removeItem('rememberedEmail');
+                }
+                
+                showToast('success', 'Welcome Back!', `Logging in as ${user.name}...`, 2000);
+                
+                // Redirect to chat after short delay
+                setTimeout(() => {
+                    window.location.href = '/chat';
+                }, 1500);
+                
+            } catch (error) {
+                console.error('Login error:', error);
+                showToast('error', 'Login Failed', 'Network error. Please try again.');
+            }
+        }
+        
+        // Sign in as Guest
+        function signInAsGuest() {
+            // Create guest user
+            const guestUser = {
+                name: 'Guest',
+                email: 'guest@anonymous.com',
+                isGuest: true
+            };
+            
+            // Store in sessionStorage (cleared on browser close)
+            sessionStorage.setItem('currentUser', JSON.stringify(guestUser));
+            sessionStorage.setItem('isLoggedIn', 'true');
+            sessionStorage.setItem('isGuest', 'true');
+            
+            // Clear any localStorage auth (not needed for guest)
+            localStorage.removeItem('currentUser');
+            localStorage.removeItem('isLoggedIn');
+            
+            showToast('success', 'Welcome Guest!', 'You can chat anonymously. Your history will be cleared when you close the browser.', 3000);
+            
+            // Redirect to chat after short delay
+            setTimeout(() => {
+                window.location.href = '/chat';
+            }, 1500);
+        }
+        
+        // Check if already logged in and restore remembered email
+        document.addEventListener('DOMContentLoaded', function() {
+            const isLoggedIn = localStorage.getItem('isLoggedIn') || sessionStorage.getItem('isLoggedIn');
+            const currentUser = localStorage.getItem('currentUser') || sessionStorage.getItem('currentUser');
+            
+            if (isLoggedIn === 'true' && currentUser) {
+                window.location.href = '/chat';
+                return;
+            }
+            
+            // Restore remembered email if exists
+            const rememberedEmail = localStorage.getItem('rememberedEmail');
+            const rememberMeFlag = localStorage.getItem('rememberMe');
+            
+            if (rememberedEmail) {
+                const emailInput = document.getElementById('login-email');
+                const rememberCheckbox = document.getElementById('remember-me');
+                
+                if (emailInput) {
+                    emailInput.value = rememberedEmail;
+                }
+                
+                if (rememberCheckbox && rememberMeFlag === 'true') {
+                    rememberCheckbox.checked = true;
+                }
+            }
+        });
+    </script>
+</body>
+</html>
+

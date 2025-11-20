@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign Up - Emotional AI Support</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/common.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/login.css') }}">
+</head>
+<body>
+    <!-- Toast Notification Container -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <div class="login-container">
+        <div class="login-header">
+            <h1>💙 Emotional AI Support</h1>
+            <p class="login-subtitle">Your Personal Guide for Emotional Well-being</p>
+        </div>
+        
+        <div class="login-content">
+            <div class="login-card">
+                <div class="login-card-header">
+                    <h2>Join Us! 🌟</h2>
+                    <p class="login-card-subtitle">Create an account to get started</p>
+                </div>
+                
+                <form class="login-form" onsubmit="handleSignup(event)">
+                    <div class="form-group">
+                        <label for="signup-name" class="form-label">
+                            <span>Full Name</span>
+                        </label>
+                        <div class="input-wrapper">
+                            <span class="input-icon">👤</span>
+                            <input 
+                                type="text" 
+                                id="signup-name" 
+                                class="form-input" 
+                                placeholder="John Doe" 
+                                required
+                                autocomplete="name"
+                            >
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="signup-email" class="form-label">
+                            <span>Email</span>
+                        </label>
+                        <div class="input-wrapper">
+                            <span class="input-icon">📧</span>
+                            <input 
+                                type="email" 
+                                id="signup-email" 
+                                class="form-input" 
+                                placeholder="your@email.com" 
+                                required
+                                autocomplete="email"
+                            >
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="signup-password" class="form-label">
+                            <span>Password</span>
+                        </label>
+                        <div class="input-wrapper">
+                            <span class="input-icon">🔒</span>
+                            <input 
+                                type="password" 
+                                id="signup-password" 
+                                class="form-input" 
+                                placeholder="••••••••" 
+                                required
+                                minlength="6"
+                                autocomplete="new-password"
+                            >
+                            <button 
+                                type="button" 
+                                class="password-toggle password-hidden" 
+                                id="signup-password-toggle"
+                                onclick="togglePasswordVisibility('signup-password', 'signup-password-toggle')"
+                                title="Show/Hide Password"
+                            >
+                            </button>
+                        </div>
+                        <small class="form-hint">Must be at least 6 characters</small>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="signup-confirm-password" class="form-label">
+                            <span>Confirm Password</span>
+                        </label>
+                        <div class="input-wrapper">
+                            <span class="input-icon">🔒</span>
+                            <input 
+                                type="password" 
+                                id="signup-confirm-password" 
+                                class="form-input" 
+                                placeholder="••••••••" 
+                                required
+                                autocomplete="new-password"
+                            >
+                            <button 
+                                type="button" 
+                                class="password-toggle password-hidden" 
+                                id="signup-confirm-password-toggle"
+                                onclick="togglePasswordVisibility('signup-confirm-password', 'signup-confirm-password-toggle')"
+                                title="Show/Hide Password"
+                            >
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <div class="eula-agreement">
+                            <label class="checkbox-label eula-label">
+                                <input type="checkbox" id="eula-accept" required>
+                                <span>I agree to the <button type="button" class="eula-link" onclick="showEULA()">Terms of Service and Privacy Policy</button></span>
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <button type="submit" class="login-button">
+                        <span>Sign Up</span>
+                        <span class="button-shine"></span>
+                    </button>
+                    
+                    <div class="login-footer">
+                        <p>Already have an account? <a href="/login">Login</a></p>
+                    </div>
+                    
+                    <div id="signup-error" class="error-message" style="display:none;"></div>
+                    <div id="signup-success" class="success-message" style="display:none;"></div>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <!-- EULA Modal -->
+    <div class="eula-modal" id="eula-modal" style="display: none;">
+        <div class="eula-modal-overlay" onclick="closeEULA()"></div>
+        <div class="eula-modal-container">
+            <div class="eula-modal-header">
+                <h2>📋 Terms of Service & Privacy Policy</h2>
+                <button type="button" class="eula-modal-close" onclick="closeEULA()" title="Close">×</button>
+            </div>
+            <div class="eula-modal-content" id="eula-content">
+                <div class="eula-section">
+                    <h3>1. Acceptance of Terms</h3>
+                    <p>By accessing and using the Emotional AI Support Chatbot, you accept and agree to be bound by the terms and provision of this agreement.</p>
+                </div>
+                
+                <div class="eula-section">
+                    <h3>2. Service Description</h3>
+                    <p>Emotional AI Support is an AI-powered emotional wellness companion designed to provide support, guidance, and comfort to users. This service is intended for informational and supportive purposes only and is not a substitute for professional mental health care.</p>
+                </div>
+                
+                <div class="eula-section">
+                    <h3>3. User Responsibilities</h3>
+                    <ul>
+                        <li>You are responsible for maintaining the confidentiality of your account credentials</li>
+                        <li>You agree to use the service only for lawful purposes</li>
+                        <li>You will not share false or misleading information</li>
+                        <li>You understand that AI responses are generated and may not always be accurate</li>
+                    </ul>
+                </div>
+                
+                <div class="eula-section">
+                    <h3>4. Privacy Policy</h3>
+                    <p><strong>Data Collection:</strong> We collect your name, email address, and encrypted passwords for account management. Conversation data is stored securely to provide continuity across sessions.</p>
+                    <p><strong>Data Security:</strong> All passwords are encrypted using bcrypt hashing. Your conversations are stored in a secure database (Neon DB) with industry-standard security measures.</p>
+                    <p><strong>Data Usage:</strong> Your data is used solely to provide and improve the service. We do not sell or share your personal information with third parties.</p>
+                    <p><strong>Data Retention:</strong> Your account data and conversations are retained until you delete your account or request data deletion.</p>
+                </div>
+                
+                <div class="eula-section">
+                    <h3>5. Disclaimer</h3>
+                    <p>This service is provided "as is" without warranties. The AI responses are for emotional support purposes only and should not replace professional medical or mental health advice. Always seek professional help for serious emotional or mental health concerns.</p>
+                </div>
+                
+                <div class="eula-section">
+                    <h3>6. Limitation of Liability</h3>
+                    <p>We are not liable for any indirect, incidental, or consequential damages arising from your use of this service. We do not guarantee the accuracy, completeness, or usefulness of AI-generated responses.</p>
+                </div>
+                
+                <div class="eula-section">
+                    <h3>7. Changes to Terms</h3>
+                    <p>We reserve the right to modify these terms at any time. Continued use of the service after changes constitutes acceptance of the new terms.</p>
+                </div>
+                
+                <div class="eula-section">
+                    <h3>8. Account Termination</h3>
+                    <p>You may delete your account at any time. We reserve the right to suspend or terminate accounts that violate these terms.</p>
+                </div>
+            </div>
+            <div class="eula-modal-footer">
+                <label class="checkbox-label eula-checkbox-final">
+                    <input type="checkbox" id="eula-final-accept">
+                    <span>I have read and agree to the Terms of Service and Privacy Policy</span>
+                </label>
+                <div class="eula-modal-buttons">
+                    <button type="button" class="eula-button-cancel" onclick="closeEULA()">Cancel</button>
+                    <button type="button" class="eula-button-accept" onclick="acceptEULA()">Accept</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Toast Notification System
+        function showToast(type, title, message, duration = 5000) {
+            const container = document.getElementById('toast-container');
+            if (!container) return;
+            
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            
+            const icons = {
+                success: '✅',
+                error: '❌',
+                info: 'ℹ️'
+            };
+            
+            const durationSeconds = duration / 1000;
+            toast.innerHTML = `
+                <div class="toast-icon">${icons[type] || icons.info}</div>
+                <div class="toast-content">
+                    <div class="toast-title">${title}</div>
+                    <div class="toast-message">${message}</div>
+                </div>
+                <button class="toast-close" onclick="removeToast(this.parentElement)">×</button>
+                <div class="toast-progress">
+                    <div class="toast-progress-bar" style="--toast-duration: ${durationSeconds}s"></div>
+                </div>
+            `;
+            
+            container.appendChild(toast);
+            
+            // Auto-dismiss after duration
+            const timeout = setTimeout(() => {
+                removeToast(toast);
+            }, duration);
+            
+            // Pause on hover
+            toast.addEventListener('mouseenter', () => {
+                clearTimeout(timeout);
+                toast.querySelector('.toast-progress-bar').style.animationPlayState = 'paused';
+            });
+            
+            toast.addEventListener('mouseleave', () => {
+                const newTimeout = setTimeout(() => {
+                    removeToast(toast);
+                }, duration);
+                toast.querySelector('.toast-progress-bar').style.animationPlayState = 'running';
+            });
+        }
+        
+        function removeToast(toast) {
+            if (!toast) return;
+            toast.classList.add('hiding');
+            setTimeout(() => {
+                if (toast.parentElement) {
+                    toast.parentElement.removeChild(toast);
+                }
+            }, 300);
+        }
+        
+        // Signup functionality
+        async function handleSignup(event) {
+            event.preventDefault();
+            
+            const name = document.getElementById('signup-name').value.trim();
+            const email = document.getElementById('signup-email').value.trim();
+            const password = document.getElementById('signup-password').value;
+            const confirmPassword = document.getElementById('signup-confirm-password').value;
+            
+            // Hide old messages if visible
+            const errorDiv = document.getElementById('signup-error');
+            const successDiv = document.getElementById('signup-success');
+            if (errorDiv) errorDiv.style.display = 'none';
+            if (successDiv) successDiv.style.display = 'none';
+            
+            // Validation
+            if (password.length < 6) {
+                showToast('error', 'Validation Error', 'Password must be at least 6 characters long.');
+                return;
+            }
+            
+            if (password !== confirmPassword) {
+                showToast('error', 'Password Mismatch', 'Passwords do not match. Please try again.');
+                return;
+            }
+            
+            try {
+                // Call API to create account
+                const response = await fetch('/api/auth/signup', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ name, email, password })
+                });
+                
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    console.error('Signup failed:', data);
+                    showToast('error', 'Signup Failed', data.error || 'Failed to create account. Please try again.');
+                    return;
+                }
+                
+                console.log('✅ Signup successful:', data);
+                
+                // Store user data and token
+                const user = data.user;
+                const token = data.token;
+                
+                localStorage.setItem('currentUser', JSON.stringify(user));
+                localStorage.setItem('authToken', token);
+                localStorage.setItem('isLoggedIn', 'true');
+                
+                showToast('success', 'Account Created!', `Welcome, ${name}! Redirecting to chat...`, 2500);
+                
+                // Redirect after short delay
+                setTimeout(() => {
+                    window.location.href = '/chat';
+                }, 2000);
+                
+            } catch (error) {
+                console.error('Signup error:', error);
+                showToast('error', 'Signup Failed', 'Network error. Please try again.');
+            }
+        }
+        
+        // Toggle password visibility
+        function togglePasswordVisibility(inputId, toggleId) {
+            const input = document.getElementById(inputId);
+            const toggle = document.getElementById(toggleId);
+            
+            if (input && toggle) {
+                if (input.type === 'password') {
+                    input.type = 'text';
+                    toggle.classList.remove('password-hidden');
+                    toggle.setAttribute('aria-label', 'Hide password');
+                } else {
+                    input.type = 'password';
+                    toggle.classList.add('password-hidden');
+                    toggle.setAttribute('aria-label', 'Show password');
+                }
+            }
+        }
+        
+        // EULA Modal Functions
+        function showEULA() {
+            const modal = document.getElementById('eula-modal');
+            if (modal) {
+                modal.style.display = 'flex';
+                document.body.style.overflow = 'hidden'; // Prevent background scrolling
+                
+                // Reset checkbox when opening
+                const finalCheckbox = document.getElementById('eula-final-accept');
+                if (finalCheckbox) {
+                    finalCheckbox.checked = false;
+                }
+            }
+        }
+        
+        function closeEULA() {
+            const modal = document.getElementById('eula-modal');
+            if (modal) {
+                modal.style.display = 'none';
+                document.body.style.overflow = ''; // Restore scrolling
+            }
+        }
+        
+        function acceptEULA() {
+            const finalCheckbox = document.getElementById('eula-final-accept');
+            const eulaAcceptCheckbox = document.getElementById('eula-accept');
+            
+            if (finalCheckbox && finalCheckbox.checked) {
+                if (eulaAcceptCheckbox) {
+                    eulaAcceptCheckbox.checked = true;
+                }
+                closeEULA();
+                showToast('success', 'Terms Accepted', 'You have accepted the Terms of Service and Privacy Policy.');
+            } else {
+                showToast('error', 'Acceptance Required', 'Please check the agreement checkbox to continue.');
+            }
+        }
+        
+        // Close EULA when clicking outside
+        document.addEventListener('click', function(event) {
+            const modal = document.getElementById('eula-modal');
+            if (modal && event.target === modal.querySelector('.eula-modal-overlay')) {
+                closeEULA();
+            }
+        });
+        
+        // Close EULA with Escape key
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape') {
+                const modal = document.getElementById('eula-modal');
+                if (modal && modal.style.display === 'flex') {
+                    closeEULA();
+                }
+            }
+        });
+        
+        // Prevent form submission if EULA not accepted
+        document.addEventListener('DOMContentLoaded', function() {
+            const form = document.querySelector('.login-form');
+            if (form) {
+                form.addEventListener('submit', function(event) {
+                    const eulaAcceptCheckbox = document.getElementById('eula-accept');
+                    if (!eulaAcceptCheckbox || !eulaAcceptCheckbox.checked) {
+                        event.preventDefault();
+                        showToast('error', 'Agreement Required', 'Please accept the Terms of Service and Privacy Policy to create an account.');
+                        showEULA(); // Open EULA modal
+                        return false;
+                    }
+                });
+            }
+            
+            // Check if already logged in
+            const isLoggedIn = localStorage.getItem('isLoggedIn');
+            const currentUser = localStorage.getItem('currentUser');
+            
+            if (isLoggedIn === 'true' && currentUser) {
+                window.location.href = '/chat';
+            }
+        });
+    </script>
+</body>
+</html>
