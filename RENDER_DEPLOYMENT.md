@@ -61,7 +61,7 @@ Your project is already set up with:
    
    - **PORT**: `10000` (Render will override this, but good to have)
    
-   - **PYTHON_VERSION**: `3.12.0` (optional, for consistency)
+   - **PYTHON_VERSION**: `3.12.7` (REQUIRED - fixes psycopg2-binary compatibility issue)
 
 5. **Deploy**
    - Click "Create Web Service"
