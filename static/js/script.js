@@ -1276,7 +1276,9 @@ function renderConversationsList() {
                 </div>
             </div>
             <div class="conversations-empty">
-                <p>No chat history</p>
+                <div class="conversations-empty-icon">💬</div>
+                <p class="conversations-empty-title">No chat history yet</p>
+                <p class="conversations-empty-description">Start a new conversation to begin chatting!</p>
             </div>
         `;
     } else {
@@ -1446,27 +1448,17 @@ function scrollToBottom() {
 // Message Display Functions
 function toggleWelcomeMessage() {
     const welcomeMessage = document.getElementById('welcome-message');
-    const noChatHistory = document.getElementById('no-chat-history');
     const messages = document.getElementById('messages');
     
     if (!welcomeMessage || !messages) return;
     
     // Hide welcome message if there are any messages (including loading indicator)
     const hasMessages = messages.children.length > 0;
-    const hasConversations = conversations.length > 0;
     
     if (hasMessages) {
         welcomeMessage.classList.add('hidden');
-        if (noChatHistory) noChatHistory.style.display = 'none';
     } else {
-        // Show "No chat history" if no conversations exist, otherwise show welcome message
-        if (!hasConversations && noChatHistory) {
-            welcomeMessage.classList.add('hidden');
-            noChatHistory.style.display = 'flex';
-        } else {
-            welcomeMessage.classList.remove('hidden');
-            if (noChatHistory) noChatHistory.style.display = 'none';
-        }
+        welcomeMessage.classList.remove('hidden');
     }
 }
 
@@ -2556,6 +2548,7 @@ async function generateAIResponse(combinedMessage, originalMessages = null) {
 - Balance support with gentle guidance - know when to listen and when to offer perspective
 - Use conversational, natural language like talking to a trusted friend
 - Show genuine care and understanding - be empathetic, hopeful, and compassionate
+- IMPORTANT: You MUST respond ONLY in Filipino or English. If the user writes in Filipino (Tagalog), respond in Filipino. If the user writes in English, respond in English. If the user writes in any other language, kindly respond in English and let them know you can only communicate in Filipino or English.
 
 Your role is to be a reliable emotional support companion that helps users feel heard, understood, and supported in their journey toward emotional wellbeing.`;
     
