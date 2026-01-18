@@ -2522,7 +2522,7 @@ async function generateAIResponse(combinedMessage, originalMessages = null) {
     }
     
     // Enhanced system prompt as Personal Guide for Emotional Well-being
-    const systemPrompt = `${LANGUAGE_RESTRICTION}
+    const systemPrompt = `${RESTRICTION}
 
 You are Your Personal Guide for Emotional Well-being. You are a friendly, empathetic, and supportive emotional wellness companion. Your personality traits:
 - Warm, caring, and genuinely concerned about users' emotional wellbeing
@@ -2538,7 +2538,7 @@ You are Your Personal Guide for Emotional Well-being. You are a friendly, empath
 
 Your role is to be a reliable emotional support companion that helps users feel heard, understood, and supported in their journey toward emotional wellbeing.
 
-${LANGUAGE_INSTRUCTIONS}`;
+${INSTRUCTIONS}`;
     
     // Get active API key (from multi-key system)
     let apiKey = getActiveApiKey();
