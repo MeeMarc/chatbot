@@ -1,5 +1,5 @@
 # Private configuration files - do not commit
-# static/js/config.private.js
+static/js/config.private.js
 
 # Python
 __pycache__/

@@ -1916,7 +1916,7 @@ function toggleApiConfig() {
 // - Public/demo purposes
 // - Temporary shared access
 // For production apps, use a backend proxy instead!
-const DEFAULT_BUILTIN_API_KEY = 'AIzaSyAcsZndePatEO83P5b2t8MHNzjI9eeVyTc'; // Replace with your key
+const DEFAULT_BUILTIN_API_KEY = 'AIzaSyDN0-5vxKHprIIbyGD-9VStNt3BXyq9dy4'; // Replace with your key
 
 // EMBEDDED API KEYS - HIDDEN FROM USERS
 // ⚠️ Add your API keys here (up to 20 keys for maximum redundancy)
@@ -1933,26 +1933,11 @@ const DEFAULT_BUILTIN_API_KEY = 'AIzaSyAcsZndePatEO83P5b2t8MHNzjI9eeVyTc'; // Re
 // To get free API keys: https://makersuite.google.com/app/apikey
 // Replace the placeholder keys below with your actual API keys
 const PRE_CONFIGURED_API_KEYS = [
-    'AIzaSyAXDxUZEt2mfMALUwwQWsjbM9qRyn3Gn_I', // Key 1 - Replace with your key
-    'AIzaSyDIQCc-fBwrU14J6PZ7EAljpNNB5VCGTUA', // Key 2 - Replace with your key
-    'AIzaSyAGAJz5puvYes8q82Fg144xjxntRxegGbE', // Key 3 - Replace with your key
-    'AIzaSyD4pIT1JVYbHOGGD7BfBn1VbG7DpVo-fWY', // Key 4 - Replace with your key
-    'AIzaSyBeQhc-eDwkgD6voFLxG-hRm9IS58RRq80', // Key 5 - Replace with your key
-    'AIzaSyCATJ3Xbm2sxh6B9ejyhfjS3BXoZjW5IjE', // Key 6 - Replace with your key (optional)
-    'AIzaSyCY5iqjxSVbbSZlOLKvd1fU2i8MbOYuhhU', // Key 7 - Replace with your key (optional)
-    'AIzaSyDiEbzH7esoras3L5HSY_6NkTfvpuchGOI', // Key 8 - Replace with your key (optional)
-    'AIzaSyDn7VWnDXFTiEOUaYjap7-UX8qN3UsX88g', // Key 9 - Replace with your key (optional)
-    'AIzaSyDrClYBC7aAXMg-ZxBC6oSdC9Pg-SVmUc8', // Key 10 - Replace with your key (optional)
-    'AIzaSyBhEujldV8xs_jHBGzDgYdNxjFjhnD7j5Q', // Key 11 - Replace with your key
-    'AIzaSyAOMA177f3ir7jrB5RgLwJ2hmnJPRlkZV4', // Key 12 - Replace with your key
-    'AIzaSyDp8E5a2RpigkN8otw1k5bgq3U3Yi1a1Tk', // Key 13 - Replace with your key
-    'AIzaSyCcfYtn1aUSSIPZh8XZmur-ueyvxGrNmus', // Key 14 - Replace with your key
-    'AIzaSyDEHYClqDV_M27gBV1c1ffo9YddapW3Fys', // Key 15 - Replace with your key
-    'AIzaSyAkuyH8z-qFYmYtN2KP7Hlx-9i1hHu0VeQ', // Key 16 - Replace with your key
-    'AIzaSyC4znjK07K_zsLNeCWl-LAYHDE5Bjh5pQI', // Key 17 - Replace with your key
-    'AIzaSyA6g_bsGQShlyDlqDJa-mSvy9AP1JYnhzk', // Key 18 - Replace with your key
-    'AIzaSyAU_5tSvsBlz8GJdbQE6y7PUWGA7ubVOmw', // Key 19 - Replace with your key
-    'AIzaSyBSnKUK10F-8SAZqsNuFgmVNTOC57EOr0w', // Key 20 - Replace with your key
+    'AIzaSyDN0-5vxKHprIIbyGD-9VStNt3BXyq9dy4', // Key 1
+    'AIzaSyCCgFh16tEjTrfPVW-XgJVnU2ecCJr97y8', // Key 2
+    'AIzaSyCCefm4NCc_GOmSOnwxQslVJLpJ8Kop-kg', // Key 3
+    'AIzaSyDLrRzyW_v1t4hQ-jdAI5RGBl_OXMbEBsc', // Key 4
+    'AIzaSyDJmYKARvjtH9Rg7ao6nL9JMYFChqBbQZY', // Key 5
 ];
 
 // Multi-API Key Management System - GLOBAL (Shared across all users)
