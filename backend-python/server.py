@@ -28,7 +28,8 @@ CORS(app)  # Enable CORS for all routes
 
 # Configuration
 DATABASE_URL = os.getenv('DATABASE_URL')
-JWT_SECRET = os.getenv('JWT_SECRET', 'your-secret-key-change-this-in-production')
+JWT_SECRET = os.getenv('JWT_SECRET', 'mySuperSecretKey_2026)
+')
 JWT_EXPIRATION_HOURS = 168  # 7 days
 PORT = int(os.getenv('PORT', 3000))
 
@@ -746,4 +747,5 @@ if __name__ == '__main__':
     logger.info(f"📝 API endpoints available at /api/*")
     
     app.run(host='0.0.0.0', port=PORT, debug=(os.getenv('NODE_ENV') == 'development'))
+
 
