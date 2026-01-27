@@ -47,7 +47,7 @@ app.get('/api/health', async (req, res) => {
 });
 
 // JWT Secret (use environment variable in production)
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-production';
+const JWT_SECRET = process.env.JWT_SECRET || 'mySuperSecretKey_2026';
 
 // Middleware to verify JWT token (optional - for protected routes)
 const authenticateToken = (req, res, next) => {
@@ -631,4 +631,5 @@ process.on('SIGINT', async () => {
     await pool.end();
     process.exit(0);
 });
+
 
