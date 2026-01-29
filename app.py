@@ -49,7 +49,7 @@ def after_request(response):
 
 # Configuration
 DATABASE_URL = os.getenv('DATABASE_URL')
-JWT_SECRET = os.getenv('JWT_SECRET', 'mySuperSecretKey_2026'')
+JWT_SECRET = os.getenv('JWT_SECRET', 'mySuperSecretKey_2026'', AIzaSyDTtECCglBD1IRgloAx_FVvEgYREJ2onjU'')
 JWT_EXPIRATION_HOURS = 168  # 7 days
 PORT = int(os.getenv('PORT', 3000))
 
@@ -848,5 +848,6 @@ if __name__ == '__main__':
     # Enable debug mode and auto-reload for development
     debug_mode = os.getenv('FLASK_ENV') == 'development' or os.getenv('NODE_ENV') == 'development' or True
     app.run(host='0.0.0.0', port=PORT, debug=debug_mode, use_reloader=True, use_debugger=debug_mode)
+
 
 
