@@ -5,20 +5,21 @@ Connects to Neon DB (PostgreSQL) for persistent storage
 
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
-import psycopg2
-from psycopg2.pool import SimpleConnectionPool
-from psycopg2.extras import RealDictCursor
+import psycopg
+from psycopg.rows import dict_row
+from psycopg.pool import ConnectionPool
 import os
 from dotenv import load_dotenv
 import jwt
 import bcrypt
 from datetime import datetime, timedelta, timezone
 import logging
+from functools import wraps
 
 # -------------------------
 # Load environment variables
 # -------------------------
-load_dotenv()  # only loads .env if exists locally; on Render use Environment tab
+load_dotenv()  # loads .env locally; on Render use Environment tab
 
 # -------------------------
 # Configure logging
@@ -55,7 +56,7 @@ def after_request(response):
 # Environment variables
 # -------------------------
 DATABASE_URL = os.getenv('DATABASE_URL')
-JWT_SECRET = os.getenv('JWT_SECRET', 'mySuperSecretKey_2026')  # fixed syntax error
+JWT_SECRET = os.getenv('JWT_SECRET', 'mySuperSecretKey_2026')
 JWT_EXPIRATION_HOURS = 168  # 7 days
 PORT = int(os.getenv('PORT', 3000))
 
@@ -70,11 +71,11 @@ def init_db_pool():
         logger.error("❌ DATABASE_URL environment variable is not set!")
         return False
     try:
-        db_pool = SimpleConnectionPool(
-            minconn=1,
-            maxconn=20,
-            dsn=DATABASE_URL,
-            connect_timeout=10
+        db_pool = ConnectionPool(
+            conninfo=DATABASE_URL,
+            min_size=1,
+            max_size=20,
+            row_factory=dict_row
         )
         logger.info("✅ Database connection pool initialized")
         return True
@@ -82,52 +83,25 @@ def init_db_pool():
         logger.error(f"❌ Database connection error: {e}")
         return False
 
-# Initialize pool safely
 if not init_db_pool():
     logger.warning("⚠️ Database pool not initialized. App may fail if database is accessed.")
 
-def get_db_connection():
-    if not db_pool:
-        logger.error("Database pool not initialized")
-        return None
-    try:
-        conn = db_pool.getconn()
-        return conn
-    except Exception as e:
-        logger.error(f"Error getting DB connection: {e}")
-        return None
-
-def return_db_connection(conn):
-    try:
-        db_pool.putconn(conn)
-    except Exception as e:
-        logger.error(f"Error returning DB connection: {e}")
-
 def execute_query(query, params=None, fetch=True):
-    if not DATABASE_URL:
-        raise Exception("DATABASE_URL environment variable not set")
-    conn = get_db_connection()
-    if not conn:
-        raise Exception("Failed to get database connection")
+    if not db_pool:
+        raise Exception("Database pool not initialized")
     try:
-        if conn.autocommit:
-            conn.autocommit = False
-        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute(query, params)
-            result = None
-            if fetch:
-                if query.strip().upper().startswith('SELECT'):
-                    result = cursor.fetchall()
-                elif query.strip().upper().startswith(('INSERT','UPDATE','DELETE')) and 'RETURNING' in query.upper():
-                    result = cursor.fetchone()
-            conn.commit()
-            return result
+        with db_pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                if fetch:
+                    if query.strip().upper().startswith('SELECT'):
+                        return cur.fetchall()
+                    elif query.strip().upper().startswith(('INSERT','UPDATE','DELETE')) and 'RETURNING' in query.upper():
+                        return cur.fetchone()
+                return None
     except Exception as e:
-        conn.rollback()
         logger.error(f"DB query error: {e}")
         raise e
-    finally:
-        return_db_connection(conn)
 
 # -------------------------
 # JWT helper functions
@@ -151,6 +125,7 @@ def verify_token(token):
         raise Exception("Invalid token")
 
 def authenticate_token(f):
+    @wraps(f)
     def decorated_function(*args, **kwargs):
         auth_header = request.headers.get('Authorization')
         if not auth_header:
@@ -161,7 +136,6 @@ def authenticate_token(f):
             return f(*args, **kwargs)
         except Exception as e:
             return jsonify({'error': str(e)}), 403
-    decorated_function.__name__ = f.__name__
     return decorated_function
 
 # -------------------------
@@ -187,9 +161,13 @@ def chat():
 def health_check():
     try:
         result = execute_query('SELECT NOW() as now')
-        return jsonify({'status':'ok','database':'connected','timestamp': result[0]['now'].isoformat()})
+        return jsonify({
+            'status': 'ok',
+            'database': 'connected',
+            'timestamp': result[0]['now'].isoformat()
+        })
     except Exception as e:
-        return jsonify({'status':'error','message': str(e)}),500
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 # -------------------------
 # Start server safely
@@ -205,9 +183,3 @@ if __name__ == '__main__':
     logger.info(f"🚀 Server starting on http://0.0.0.0:{PORT}")
     debug_mode = os.getenv('FLASK_ENV') == 'development' or os.getenv('NODE_ENV') == 'development'
     app.run(host='0.0.0.0', port=PORT, debug=debug_mode)
-
-
-
-
-
-
