@@ -352,69 +352,155 @@ init_db_pool()
 
 def get_db_connection():
     """Get a database connection from the pool"""
+    global db_pool
+
     if not DATABASE_URL:
         logger.error("DATABASE_URL environment variable is not set")
         return None
     if not db_pool:
-        logger.error("Database connection pool is not initialized. Check DATABASE_URL in .env file")
-        return None
-    try:
-        conn = db_pool.getconn()
-        return conn
-    except Exception as e:
-        logger.error(f"Error getting database connection: {e}")
-        return None
+        logger.warning("Database pool not initialized. Attempting to initialize.")
+        if not init_db_pool():
+            logger.error("Database connection pool is not initialized. Check DATABASE_URL in .env file")
+            return None
 
-def return_db_connection(conn):
+    for attempt in range(2):
+        try:
+            conn = db_pool.getconn()
+            if not conn or conn.closed:
+                if conn:
+                    try:
+                        db_pool.putconn(conn, close=True)
+                    except Exception:
+                        pass
+                raise psycopg2.InterfaceError("Received closed connection from pool")
+            return conn
+        except Exception as e:
+            logger.error(f"Error getting database connection (attempt {attempt + 1}/2): {e}")
+
+            # Recreate pool once if acquisition fails.
+            if attempt == 0:
+                try:
+                    if db_pool:
+                        db_pool.closeall()
+                except Exception:
+                    pass
+                db_pool = None
+                if not init_db_pool():
+                    break
+            else:
+                break
+
+    return None
+
+def return_db_connection(conn, close_conn=False):
     """Return a database connection to the pool"""
+    if not conn:
+        return
+
+    global db_pool
+    if not db_pool:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return
+
     try:
-        db_pool.putconn(conn)
+        should_close = close_conn or bool(getattr(conn, 'closed', 0))
+        db_pool.putconn(conn, close=should_close)
     except Exception as e:
         logger.error(f"Error returning database connection: {e}")
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 def execute_query(query, params=None, fetch=True):
     """Execute a database query"""
     if not DATABASE_URL:
         raise Exception("DATABASE_URL environment variable is not set. Please create a .env file with your database connection string.")
-    conn = get_db_connection()
-    if not conn:
-        if not db_pool:
-            raise Exception("Database connection pool not initialized. Check DATABASE_URL in .env file")
-        raise Exception("Database connection failed. Check your DATABASE_URL and database server status.")
-    
-    try:
-        # Ensure connection is not in autocommit mode
-        if conn.autocommit:
-            conn.autocommit = False
-            
-        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute(query, params)
-            result = None
-            if fetch:
-                if query.strip().upper().startswith('SELECT'):
-                    result = cursor.fetchall()
-                elif query.strip().upper().startswith('INSERT') and 'RETURNING' in query.upper():
-                    result = cursor.fetchone()
-                elif query.strip().upper().startswith('UPDATE') and 'RETURNING' in query.upper():
-                    result = cursor.fetchone()
-                elif query.strip().upper().startswith('DELETE') and 'RETURNING' in query.upper():
-                    result = cursor.fetchone()
-            
-            # Always commit for INSERT, UPDATE, DELETE operations
-            # For SELECT queries, commit is harmless (no-op)
-            conn.commit()
-            logger.debug(f"Committed {query.strip().upper().split()[0]} operation")
-            
-            return result
-    except Exception as e:
-        conn.rollback()
-        logger.error(f"Database query error: {e}")
-        logger.error(f"Query: {query[:100]}...")
-        if params:
-            logger.error(f"Params: {params}")
-        raise e
-    finally:
-        return_db_connection(conn)
+
+    last_error = None
+    max_attempts = 2
+    for attempt in range(max_attempts):
+        conn = get_db_connection()
+        if not conn:
+            if not db_pool:
+                raise Exception("Database connection pool not initialized. Check DATABASE_URL in .env file")
+            raise Exception("Database connection failed. Check your DATABASE_URL and database server status.")
+
+        close_conn = False
+        try:
+            # Ensure connection is not in autocommit mode.
+            if conn.autocommit:
+                conn.autocommit = False
+
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query, params)
+                result = None
+                if fetch:
+                    if query.strip().upper().startswith('SELECT'):
+                        result = cursor.fetchall()
+                    elif query.strip().upper().startswith('INSERT') and 'RETURNING' in query.upper():
+                        result = cursor.fetchone()
+                    elif query.strip().upper().startswith('UPDATE') and 'RETURNING' in query.upper():
+                        result = cursor.fetchone()
+                    elif query.strip().upper().startswith('DELETE') and 'RETURNING' in query.upper():
+                        result = cursor.fetchone()
+
+                # Always commit for INSERT, UPDATE, DELETE operations.
+                # For SELECT queries, commit is harmless (no-op).
+                conn.commit()
+                logger.debug(f"Committed {query.strip().upper().split()[0]} operation")
+                return result
+        except (psycopg2.InterfaceError, psycopg2.OperationalError) as e:
+            last_error = e
+            close_conn = True
+            message = str(e).lower()
+            transient_conn_issue = (
+                "connection already closed" in message
+                or "server closed the connection unexpectedly" in message
+                or "terminating connection" in message
+                or "connection not open" in message
+                or "ssl connection has been closed unexpectedly" in message
+            )
+
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+            if transient_conn_issue and attempt < (max_attempts - 1):
+                logger.warning(
+                    "Transient DB connection issue detected. Retrying query (%s/%s). Error: %s",
+                    attempt + 1,
+                    max_attempts,
+                    e
+                )
+                continue
+
+            logger.error(f"Database query error: {e}")
+            logger.error(f"Query: {query[:100]}...")
+            if params:
+                logger.error(f"Params: {params}")
+            raise
+        except Exception as e:
+            last_error = e
+            close_conn = bool(getattr(conn, 'closed', 0))
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            logger.error(f"Database query error: {e}")
+            logger.error(f"Query: {query[:100]}...")
+            if params:
+                logger.error(f"Params: {params}")
+            raise
+        finally:
+            return_db_connection(conn, close_conn=close_conn)
+
+    if last_error:
+        raise last_error
 
 # ========================================
 # FRONTEND ROUTES (Serve HTML pages)

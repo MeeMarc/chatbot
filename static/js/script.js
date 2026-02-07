@@ -70,12 +70,24 @@ async function apiRequest(endpoint, options = {}) {
     
     try {
         const response = await fetch(endpoint, defaultOptions);
-        const data = await response.json();
-        
-        if (!response.ok) {
-            throw new Error(data.error || 'API request failed');
+        const rawBody = await response.text();
+        let data = {};
+
+        if (rawBody) {
+            try {
+                data = JSON.parse(rawBody);
+            } catch (_parseError) {
+                data = { error: rawBody.slice(0, 300) };
+            }
         }
-        
+
+        if (!response.ok) {
+            const backendError = String(data?.error || '').trim();
+            const statusInfo = `HTTP ${response.status}`;
+            const message = backendError || `${statusInfo}: API request failed`;
+            throw new Error(message);
+        }
+
         return data;
     } catch (error) {
         console.error('API request error:', error);
