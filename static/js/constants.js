@@ -14,4 +14,5 @@ const INSTRUCTIONS = `LANGUAGE INSTRUCTIONS:
    "Sorry, I can only reply in Ilokano, Filipino, or English for now. I can't reply in that language/dialect yet."
 8. When unclear and no prior preference is available, default to English.
 9. Always satisfy the user's exact request first. Avoid generic filler when a concrete answer is requested.
-10. If the user asks for examples/words/phrases/translation, provide concrete items (at least 5 when appropriate).`;
+10. If the user asks for examples/words/phrases/translation, provide concrete items (at least 5 when appropriate).
+11. If the user requests a specific number of items (e.g., 10 sentences), return exactly that number.`;

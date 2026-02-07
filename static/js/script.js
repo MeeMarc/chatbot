@@ -2019,14 +2019,85 @@ function buildLocalFallbackReply(userMessage) {
     return 'I am still here with you. There is a temporary connection issue with the AI service right now. Please try sending your message again in a few seconds.';
 }
 
-function buildTaskFulfillmentDirective(latestUserMessage, detectedLanguage) {
+function extractRequestedItemConstraint(latestUserMessage) {
     const message = String(latestUserMessage || '').toLowerCase();
-    const asksForConcreteLanguageItems = /\b(word|words|phrase|phrases|vocabulary|translate|translation|example|examples|sentence|sentences|meaning|meanings|sasao|salita|kahulugan)\b/.test(message);
+    const sentencePattern = /\b(sentence|sentences|sentensa|sentensya|pangungusap)\b/;
+    const phrasePattern = /\b(phrase|phrases|kataga|parirala)\b/;
+    const examplePattern = /\b(example|examples|halimbawa|pagwadan)\b/;
+    const concreteItemPattern = /\b(word|words|vocabulary|translate|translation|meaning|meanings|kahulugan|sasao|salita|sao)\b/;
+    const asksForConcreteLanguageItems = sentencePattern.test(message)
+        || phrasePattern.test(message)
+        || examplePattern.test(message)
+        || concreteItemPattern.test(message);
+    if (!asksForConcreteLanguageItems) {
+        return null;
+    }
+
+    const unit = sentencePattern.test(message) ? 'sentences'
+        : phrasePattern.test(message) ? 'phrases'
+        : examplePattern.test(message) ? 'examples'
+        : 'words';
+
+    let count = null;
+    const digitMatch = message.match(/\b([1-9]\d{0,2})\b/);
+    if (digitMatch) {
+        count = parseInt(digitMatch[1], 10);
+    } else {
+        const wordToNumber = {
+            one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+            eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20,
+            isa: 1, dalawa: 2, tatlo: 3, apat: 4, lima: 5, anim: 6, pito: 7, walo: 8, siyam: 9, sampu: 10,
+            maysa: 1, dua: 2, tallo: 3, uppat: 4, innem: 6, siam: 9, sangapulo: 10
+        };
+        for (const [word, number] of Object.entries(wordToNumber)) {
+            if (new RegExp(`\\b${word}\\b`).test(message)) {
+                count = number;
+                break;
+            }
+        }
+    }
+
+    return {
+        asksForConcreteLanguageItems,
+        unit,
+        count: count && count > 0 ? Math.min(count, 30) : null
+    };
+}
+
+function countNumberedItems(text) {
+    const content = String(text || '');
+    if (!content) return 0;
+
+    // Prefer line-based counting for properly formatted lists.
+    const lineMatches = content.match(/^\s*\d{1,2}[.)-]\s+/gm);
+    if (lineMatches && lineMatches.length > 0) {
+        return lineMatches.length;
+    }
+
+    // Fallback for single-line lists such as "1. ... 2. ... 3. ...".
+    const inlineMatches = content.match(/(?:^|\s)\d{1,2}[.)-]\s+/g);
+    return inlineMatches ? inlineMatches.length : 0;
+}
+
+function buildTaskFulfillmentDirective(latestUserMessage, detectedLanguage, constraint) {
+    const asksForConcreteLanguageItems = Boolean(constraint?.asksForConcreteLanguageItems);
 
     if (asksForConcreteLanguageItems) {
+        if (constraint?.count) {
+            return `TASK MODE: Concrete language help.
+- Satisfy the user's request directly.
+- Return exactly ${constraint.count} ${constraint.unit}.
+- Use a numbered list from 1 to ${constraint.count}.
+- No intro text and no ending filler text.
+- This is a strict list task; do not use the default 2-4 sentence chat style.
+- Keep the whole reply in ${detectedLanguage}.
+- Include translations/meanings only if the user explicitly asked for them.`;
+        }
         return `TASK MODE: Concrete language help.
 - Satisfy the user's request directly.
 - Provide at least 5 concrete items when they ask for words/phrases/examples.
+- Use a numbered list when possible.
+- This is a list task; do not use the default 2-4 sentence chat style.
 - Keep the whole reply in ${detectedLanguage}.
 - Do not switch to another language unless the user asks to switch.`;
     }
@@ -2035,6 +2106,34 @@ function buildTaskFulfillmentDirective(latestUserMessage, detectedLanguage) {
 - Prioritize answering the user's exact request first.
 - Keep the whole reply in ${detectedLanguage}.
 - Be concise but complete.`;
+}
+
+function getResponseGenerationConfig(constraint) {
+    if (constraint?.count) {
+        const unitMultiplier = constraint.unit === 'sentences' ? 90 : 50;
+        const maxOutputTokens = Math.max(700, Math.min(2400, constraint.count * unitMultiplier));
+        return {
+            temperature: 0.45,
+            maxOutputTokens,
+            topP: 0.9,
+            topK: 32
+        };
+    }
+    if (constraint?.asksForConcreteLanguageItems) {
+        return {
+            temperature: 0.5,
+            maxOutputTokens: 900,
+            topP: 0.9,
+            topK: 32
+        };
+    }
+
+    return {
+        temperature: 0.75,
+        maxOutputTokens: 300,
+        topP: 0.95,
+        topK: 40
+    };
 }
 
 async function callBackendAIGenerate(prompt, generationConfig = {}, options = {}) {
@@ -2127,6 +2226,7 @@ async function generateAIResponse(combinedMessage, originalMessages = null) {
         ? originalMessages[originalMessages.length - 1]
         : combinedMessage;
     const detectedLanguage = detectFallbackLanguage(latestUserMessage);
+    const requestConstraint = extractRequestedItemConstraint(latestUserMessage);
     if (detectedLanguage === 'unsupported') {
         const notice = buildUnsupportedLanguageNotice();
         conversationHistory.push({ role: "assistant", content: notice });
@@ -2157,19 +2257,45 @@ ${INSTRUCTIONS}`;
     ).join('\n');
 
     const turnLanguageDirective = `CURRENT TURN LANGUAGE: Reply in ${detectedLanguage}. If the user asks to switch to Ilokano, Filipino, or English, switch immediately.`;
-    const taskDirective = buildTaskFulfillmentDirective(latestUserMessage, detectedLanguage);
+    const taskDirective = buildTaskFulfillmentDirective(latestUserMessage, detectedLanguage, requestConstraint);
     const prompt = `${systemPrompt}\n\n${turnLanguageDirective}\n\n${taskDirective}\n\nConversation history:\n${context}\n\nUser: ${combinedMessage}\nAssistant:`;
+    const generationConfig = getResponseGenerationConfig(requestConstraint);
 
     abortController = new AbortController();
     try {
-        const aiResponse = await callBackendAIGenerate(prompt, {
-            temperature: 0.75,
-            maxOutputTokens: 300,
-            topP: 0.95,
-            topK: 40
-        }, {
+        let aiResponse = await callBackendAIGenerate(prompt, generationConfig, {
             signal: abortController.signal
         });
+
+        // If user asked for an exact count and response misses it, run strict correction passes.
+        if (requestConstraint?.count) {
+            let actualCount = countNumberedItems(aiResponse);
+            let correctionAttempt = 0;
+
+            while (actualCount !== requestConstraint.count && correctionAttempt < 2) {
+                const correctionPrompt = `${systemPrompt}\n\n${turnLanguageDirective}\n\nCORRECTION MODE:
+- Return exactly ${requestConstraint.count} ${requestConstraint.unit}.
+- Number each item from 1 to ${requestConstraint.count}.
+- No intro and no outro.
+- Keep output in ${detectedLanguage}.
+- Ensure all items are complete and not cut off.
+- Do not stop until item ${requestConstraint.count} is provided.\n\nUser request:\n${latestUserMessage}\n\nAssistant:`;
+
+                aiResponse = await callBackendAIGenerate(correctionPrompt, {
+                    ...generationConfig,
+                    temperature: 0.25,
+                    maxOutputTokens: Math.max(
+                        generationConfig.maxOutputTokens || 0,
+                        requestConstraint.count * (requestConstraint.unit === 'sentences' ? 110 : 65)
+                    )
+                }, {
+                    signal: abortController.signal
+                });
+
+                actualCount = countNumberedItems(aiResponse);
+                correctionAttempt += 1;
+            }
+        }
 
         conversationHistory.push({ role: "assistant", content: aiResponse });
         return aiResponse;

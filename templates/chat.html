@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/common.css') }}?v=6">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/chat.css') }}?v=3">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/chat.css') }}?v=5">
 </head>
 <body>
     <div class="container">
@@ -78,49 +78,33 @@
                 <div class="input-area">
                     <!-- Tips Panel (Left side) -->
                     <div class="tips-panel" id="tips-panel">
-                        <button onclick="toggleTipsPanel()" class="tips-toggle-btn" title="Quick Tips">💡</button>
+                        <button onclick="toggleTipsPanel()" class="tips-toggle-btn" title="Quick Tips">&#x1F4A1;</button>
                         <div class="tips-content" id="tips-content">
                             <div class="tips-header">
-                                <h4>💡 Emotions </h4>
-                                <button onclick="toggleTipsPanel()" class="tips-close-btn" title="Close">✕</button>
+                                <h4><span class="tips-header-emoji">&#x1F4A1;</span><span>Emotions</span></h4>
+                                <button onclick="toggleTipsPanel()" class="tips-close-btn" title="Close">&times;</button>
                             </div>
                             <div class="tips-buttons">
                                 <button onclick="sendQuick('I feel stressed today')" class="tip-btn">
-                                    <span>😟</span>
-                                    <span>Feeling Stressed</span>
+                                    <span class="tip-emoji">&#x1F61F;</span>
+                                    <span class="tip-label">Feeling Stressed</span>
                                 </button>
                                 <button onclick="sendQuick('I am heartbroken')" class="tip-btn">
-                                    <span>💔</span>
-                                    <span>Heartbroken</span>
+                                    <span class="tip-emoji">&#x1F494;</span>
+                                    <span class="tip-label">Heartbroken</span>
                                 </button>
                                 <button onclick="sendQuick('I need motivation')" class="tip-btn">
-                                    <span>💪</span>
-                                    <span>Need Motivation</span>
+                                    <span class="tip-emoji">&#x1F4AA;</span>
+                                    <span class="tip-label">Need Motivation</span>
                                 </button>
                                 <button onclick="sendQuick('I want to talk about crush')" class="tip-btn">
-                                    <span>💕</span>
-                                    <span>Crush / Love Talk</span>
-                                    <span>😟 Anxious</span>
-                                    <span>😞 Tired></span>
-                                    <span> 😢 Crying></span>
-                                    <span>😐 Empty </span>
-                                    <span>😠 Angry  </span>
-                                    <span>🌧️ Overwhelmed </span>
-                                    <span>🫂 Lonely </span>
-                                    <span>🌱 Healing </span>
-                                    <span>😶‍🌫️ Confused </span>
-                                    <span>😔 Hopeless </span>
-                                    <span> 😣 Stressed </span>
-                                    <span>🥀 Numb </span>
-                                    <span>😨 Scared </span>
-                                    <span>😤 Frustrated </span>
-                                    <span>🫥 Lost </span>
-                                    <span>😓 Burnout </span>
-                                    <span>🫀 Vulnerable </span>
-                                    <span>🌫️ Overthinking </span>
-                                    <span>🫶 Seeking Comfort </span>
-                                    <span>🌅 Still Here </span>
-                             </button>
+                                    <span class="tip-emoji">&#x1F49E;</span>
+                                    <span class="tip-label">Crush / Love Talk</span>
+                                </button>
+                                <button onclick="sendQuick('I feel anxious')" class="tip-btn">
+                                    <span class="tip-emoji">&#x1F628;</span>
+                                    <span class="tip-label">Anxious</span>
+                                </button>
                             </div>
                         </div>
                     </div>
@@ -158,8 +142,8 @@
     <!-- Toast Notification Container -->
     <div class="toast-container" id="toast-container"></div>
     
-    <script src="{{ url_for('static', filename='js/constants.js', v='20260208f') }}"></script>
-    <script src="{{ url_for('static', filename='js/script.js', v='20260208f') }}"></script>
+    <script src="{{ url_for('static', filename='js/constants.js', v='20260208i') }}"></script>
+    <script src="{{ url_for('static', filename='js/script.js', v='20260208i') }}"></script>
     <script>
         // Dark Mode Toggle Functionality
         function toggleDarkMode() {
@@ -189,4 +173,5 @@
     </script>
 </body>
 </html>
+
 

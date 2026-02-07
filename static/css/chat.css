@@ -1238,7 +1238,7 @@ body.dark-mode .input-area input:focus {
     background: #fef3c7; /* Solid color instead of gradient */
     border: 2px solid #fcd34d;
     border-radius: var(--radius-lg);
-    font-size: 26px;
+    font-size: 32px;
     cursor: pointer;
     transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
     display: flex;
@@ -1282,6 +1282,7 @@ body.dark-mode .input-area input:focus {
     border: 1px solid rgba(255, 255, 255, 0.8);
     animation: slideUpBounce 0.4s cubic-bezier(0.16, 1, 0.3, 1);
     overflow: hidden;
+    max-height: min(72vh, 520px);
     pointer-events: auto;
 }
 
@@ -1349,6 +1350,11 @@ body.dark-mode .tips-content {
     font-family: 'Poppins', sans-serif;
 }
 
+.tips-header-emoji {
+    font-size: 28px;
+    line-height: 1;
+}
+
 .tips-close-btn {
     background: rgba(226, 232, 240, 0.6);
     border: none;
@@ -1381,6 +1387,28 @@ body.dark-mode .tips-content {
     display: flex;
     flex-direction: column;
     gap: 10px;
+    overflow-y: auto;
+    max-height: calc(min(72vh, 520px) - 110px);
+    padding-right: 6px;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(102, 126, 234, 0.5) transparent;
+}
+
+.tips-buttons::-webkit-scrollbar {
+    width: 8px;
+}
+
+.tips-buttons::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.tips-buttons::-webkit-scrollbar-thumb {
+    background: rgba(102, 126, 234, 0.45);
+    border-radius: 999px;
+}
+
+.tips-buttons::-webkit-scrollbar-thumb:hover {
+    background: rgba(102, 126, 234, 0.65);
 }
 
 .tip-btn {
@@ -1424,9 +1452,15 @@ body.dark-mode .tip-btn {
     transform: translateX(4px) translateY(0);
 }
 
-.tip-btn span {
-    font-size: 20px;
+.tip-btn .tip-emoji {
+    font-size: 28px;
+    line-height: 1;
     flex-shrink: 0;
+}
+
+.tip-btn .tip-label {
+    font-size: 15px;
+    font-weight: 600;
 }
 
 /* Chat Actions */
@@ -1586,13 +1620,14 @@ body.dark-mode .tip-btn {
     .tips-toggle-btn {
         width: 48px;
         height: 48px;
-        font-size: 22px;
+        font-size: 28px;
     }
     
     .tips-content {
         right: auto;
         min-width: calc(100vw - 32px);
         max-width: calc(100vw - 32px);
+        max-height: min(68vh, 460px);
         padding: 20px;
         border-radius: var(--radius-lg);
     }
@@ -1603,6 +1638,7 @@ body.dark-mode .tip-btn {
     
     .tips-buttons {
         gap: 8px;
+        max-height: calc(min(68vh, 460px) - 100px);
     }
     
     .tip-btn {
@@ -1620,13 +1656,14 @@ body.dark-mode .tip-btn {
     .tips-content {
         min-width: calc(100vw - 24px);
         max-width: calc(100vw - 24px);
+        max-height: min(64vh, 420px);
         padding: 16px;
     }
     
     .tips-toggle-btn {
         width: 44px;
         height: 44px;
-        font-size: 20px;
+        font-size: 24px;
     }
     
     .tips-header {
@@ -1644,8 +1681,8 @@ body.dark-mode .tip-btn {
         gap: 8px;
     }
     
-    .tip-btn span {
-        font-size: 18px;
+    .tip-btn .tip-emoji {
+        font-size: 24px;
     }
 }
 
@@ -1653,6 +1690,7 @@ body.dark-mode .tip-btn {
     .tips-content {
         min-width: calc(100vw - 20px);
         max-width: calc(100vw - 20px);
+        max-height: min(60vh, 400px);
         padding: 14px;
     }
     
