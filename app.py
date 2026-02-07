@@ -63,16 +63,26 @@ PORT = int(os.getenv('PORT', 3000))
 db_pool = None
 
 GEMINI_DEFAULT_MODELS = [
-    "gemini-1.5-flash",
-    "gemini-1.5-pro",
-    "gemini-2.0-flash-exp",
-    "gemini-1.5-flash-002",
-    "gemini-1.5-pro-002",
-    "gemini-1.5-flash-001",
-    "gemini-1.5-pro-001",
-    "gemini-1.5-flash-latest",
-    "gemini-1.5-pro-latest",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-001",
+    "gemini-2.0-flash-lite",
+    "gemini-flash-latest",
+    "gemini-pro-latest",
+    "gemini-2.5-pro",
 ]
+
+GEMINI_MODEL_ALIASES = {
+    "gemini-1.5-flash": "gemini-2.5-flash",
+    "gemini-1.5-flash-001": "gemini-2.5-flash",
+    "gemini-1.5-flash-002": "gemini-2.5-flash",
+    "gemini-1.5-flash-latest": "gemini-2.5-flash",
+    "gemini-1.5-pro": "gemini-pro-latest",
+    "gemini-1.5-pro-001": "gemini-pro-latest",
+    "gemini-1.5-pro-002": "gemini-pro-latest",
+    "gemini-1.5-pro-latest": "gemini-pro-latest",
+    "gemini-2.0-flash-exp": "gemini-2.0-flash",
+}
 
 
 def _clamp_float(value, default, minimum, maximum):
@@ -133,6 +143,9 @@ def build_model_candidates(preferred_model):
     """Build ordered model list with optional preferred model first."""
     candidates = []
     preferred = (preferred_model or "").strip()
+    if preferred.startswith("models/"):
+        preferred = preferred.split("models/", 1)[1]
+    preferred = GEMINI_MODEL_ALIASES.get(preferred, preferred)
 
     if preferred:
         candidates.append(preferred)
@@ -146,6 +159,10 @@ def build_model_candidates(preferred_model):
 
 def call_gemini_generate(api_key, model, prompt, generation_config):
     """Call Gemini GenerateContent API for one key+model."""
+    model = (model or "").strip()
+    if model.startswith("models/"):
+        model = model.split("models/", 1)[1]
+    model = GEMINI_MODEL_ALIASES.get(model, model)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],

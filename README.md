@@ -16,13 +16,10 @@ chatbot/
   requirements.txt
   runtime.txt
   render.yaml
-  Procfile
   database_schema.sql
   .env.example
   templates/
   static/
-  backend/
-  backend-python/
   docs/
 ```
 

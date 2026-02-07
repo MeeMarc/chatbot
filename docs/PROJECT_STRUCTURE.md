@@ -8,7 +8,6 @@ chatbot/
   requirements.txt            # Python dependencies for root deployment
   runtime.txt                 # Python runtime pin for platforms like Render
   render.yaml                 # Render IaC config
-  Procfile                    # Procfile-based deployment fallback
   .env.example                # Environment variable template
   database_schema.sql         # SQL schema
 
@@ -17,9 +16,6 @@ chatbot/
     js/
 
   templates/                  # Flask templates
-
-  backend/                    # Legacy Node backend (optional)
-  backend-python/             # Python backend wrapper/docs
 
   docs/                       # Operational and setup documentation
 ```

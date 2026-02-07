@@ -1940,7 +1940,7 @@ function saveApiKey() {
     updateStatusIndicator();
 }
 async function callBackendAIGenerate(prompt, generationConfig = {}, options = {}) {
-    const preferredModel = localStorage.getItem('gemini_model') || 'gemini-1.5-flash';
+    const preferredModel = localStorage.getItem('gemini_model') || 'gemini-2.5-flash';
     const payload = {
         prompt: prompt,
         preferredModel: preferredModel,

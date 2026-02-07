@@ -1,6 +1,3 @@
-# Private configuration files - do not commit
-static/js/constants.js
-
 # Python
 __pycache__/
 *.py[cod]
