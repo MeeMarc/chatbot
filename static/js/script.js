@@ -1916,7 +1916,7 @@ function toggleApiConfig() {
 // - Public/demo purposes
 // - Temporary shared access
 // For production apps, use a backend proxy instead!
-const DEFAULT_BUILTIN_API_KEY = 'AIzaSyDN0-5vxKHprIIbyGD-9VStNt3BXyq9dy4'; // Replace with your key
+const DEFAULT_BUILTIN_API_KEY = ''; // Keep empty: do not hardcode secrets in frontend
 
 // EMBEDDED API KEYS - HIDDEN FROM USERS
 // ⚠️ Add your API keys here (up to 20 keys for maximum redundancy)
@@ -1933,11 +1933,26 @@ const DEFAULT_BUILTIN_API_KEY = 'AIzaSyDN0-5vxKHprIIbyGD-9VStNt3BXyq9dy4'; // Re
 // To get free API keys: https://makersuite.google.com/app/apikey
 // Replace the placeholder keys below with your actual API keys
 const PRE_CONFIGURED_API_KEYS = [
-    'AIzaSyDN0-5vxKHprIIbyGD-9VStNt3BXyq9dy4', // Key 1
-    'AIzaSyCCgFh16tEjTrfPVW-XgJVnU2ecCJr97y8', // Key 2
-    'AIzaSyCCefm4NCc_GOmSOnwxQslVJLpJ8Kop-kg', // Key 3
-    'AIzaSyDLrRzyW_v1t4hQ-jdAI5RGBl_OXMbEBsc', // Key 4
-    'AIzaSyDJmYKARvjtH9Rg7ao6nL9JMYFChqBbQZY', // Key 5
+    '', // Key 1
+    '', // Key 2
+    '', // Key 3
+    '', // Key 4
+    '', // Key 5
+    '', // Key 6
+    '', // Key 7
+    '', // Key 8
+    '', // Key 9
+    '', // Key 10
+    '', // Key 11
+    '', // Key 12
+    '', // Key 13
+    '', // Key 14
+    '', // Key 15
+    '', // Key 16
+    '', // Key 17
+    '', // Key 18
+    '', // Key 19
+    '', // Key 20
 ];
 
 // Multi-API Key Management System - GLOBAL (Shared across all users)
@@ -1948,6 +1963,91 @@ const GLOBAL_API_KEYS_STORAGE_KEY = 'gemini_api_keys_global';
 let cachedApiKeys = null;
 let apiKeysCacheTime = 0;
 const API_KEYS_CACHE_DURATION = 5000; // Cache for 5 seconds
+const KEY_RATE_LIMIT_COOLDOWN_MS = 120000; // 2 minutes
+const KEY_TRANSIENT_COOLDOWN_MS = 30000; // 30 seconds
+const KEY_STATUS_WORKING = 'working';
+const KEY_STATUS_COOLDOWN = 'cooldown';
+const KEY_STATUS_INVALID = 'invalid';
+
+function sanitizeApiKey(rawKey) {
+    if (!rawKey || typeof rawKey !== 'string') {
+        return '';
+    }
+    return rawKey.trim();
+}
+
+function normalizeKeyRecord(keyObj, index = 0) {
+    if (!keyObj || typeof keyObj !== 'object') {
+        return null;
+    }
+    
+    const normalizedKey = sanitizeApiKey(keyObj.key);
+    if (!normalizedKey || !normalizedKey.startsWith('AIza')) {
+        return null;
+    }
+    
+    const normalizedStatus = keyObj.status === KEY_STATUS_INVALID || keyObj.status === KEY_STATUS_COOLDOWN
+        ? keyObj.status
+        : KEY_STATUS_WORKING;
+    
+    return {
+        ...keyObj,
+        id: keyObj.id || `key_${index}_${Date.now()}`,
+        key: normalizedKey,
+        active: Boolean(keyObj.active),
+        status: normalizedStatus,
+        cooldownUntil: keyObj.cooldownUntil ? Number(keyObj.cooldownUntil) : null,
+        lastError: keyObj.lastError || null,
+        failedAt: keyObj.failedAt || null,
+        invalidAt: keyObj.invalidAt || null
+    };
+}
+
+function dedupeApiKeys(keys) {
+    if (!Array.isArray(keys)) {
+        return [];
+    }
+    
+    const deduped = [];
+    const seen = new Set();
+    
+    keys.forEach((keyObj, index) => {
+        const normalized = normalizeKeyRecord(keyObj, index);
+        if (!normalized || seen.has(normalized.key)) {
+            return;
+        }
+        
+        seen.add(normalized.key);
+        deduped.push(normalized);
+    });
+    
+    return deduped;
+}
+
+function isKeyOnCooldown(keyObj, now = Date.now()) {
+    if (!keyObj || keyObj.status !== KEY_STATUS_COOLDOWN || !keyObj.cooldownUntil) {
+        return false;
+    }
+    return Number(keyObj.cooldownUntil) > now;
+}
+
+function clearExpiredCooldowns(keys, now = Date.now()) {
+    let changed = false;
+    const updated = keys.map(keyObj => {
+        if (keyObj.status === KEY_STATUS_COOLDOWN && keyObj.cooldownUntil && Number(keyObj.cooldownUntil) <= now) {
+            changed = true;
+            return {
+                ...keyObj,
+                status: KEY_STATUS_WORKING,
+                cooldownUntil: null,
+                lastError: null
+            };
+        }
+        return keyObj;
+    });
+    
+    return { keys: updated, changed };
+}
 
 function getUserApiKeys() {
     // Use cache if still valid
@@ -1957,20 +2057,21 @@ function getUserApiKeys() {
     }
     
     // Always use embedded keys first - these are the primary source
-    // Check if embedded keys need to be imported
-    const importedKey = localStorage.getItem('embedded_keys_imported');
     let keys = [];
+    let keysChanged = false;
     
     // Auto-import embedded keys if not already imported (always check for updates)
     if (PRE_CONFIGURED_API_KEYS.length > 0) {
         // Always sync embedded keys (in case you update the code)
-        const validEmbeddedKeys = PRE_CONFIGURED_API_KEYS.filter(key => key && key.startsWith('AIza'));
+        const validEmbeddedKeys = PRE_CONFIGURED_API_KEYS
+            .map(key => sanitizeApiKey(key))
+            .filter(key => key && key.startsWith('AIza'));
         
         if (validEmbeddedKeys.length > 0) {
             console.log('🔄 Loading embedded API keys:', validEmbeddedKeys.length, 'keys');
             
             // Get existing keys from storage
-            const storedKeys = JSON.parse(localStorage.getItem(GLOBAL_API_KEYS_STORAGE_KEY) || '[]');
+            const storedKeys = dedupeApiKeys(JSON.parse(localStorage.getItem(GLOBAL_API_KEYS_STORAGE_KEY) || '[]'));
             const existingKeyValues = new Set(storedKeys.map(k => k.key));
             
             // Add embedded keys that aren't already in storage
@@ -1981,10 +2082,11 @@ function getUserApiKeys() {
                         key: key,
                         addedAt: new Date().toISOString(),
                         active: index === 0, // First key is active by default
-                        status: 'working',
+                        status: KEY_STATUS_WORKING,
                         preconfigured: true,
                         embedded: true
                     });
+                    keysChanged = true;
                     console.log('✅ Added embedded key', (index + 1) + '/' + validEmbeddedKeys.length);
                 } else {
                     // Key already exists, keep it but mark as embedded
@@ -2006,15 +2108,25 @@ function getUserApiKeys() {
             // Ensure first embedded key is active if no active key
             const hasActiveKey = keys.some(k => k.active);
             if (!hasActiveKey && keys.length > 0) {
-                keys[0].active = true;
-                for (let i = 1; i < keys.length; i++) {
-                    keys[i].active = false;
+                let nextActiveIndex = keys.findIndex(k => k.status !== KEY_STATUS_INVALID && !isKeyOnCooldown(k, now));
+                if (nextActiveIndex < 0) {
+                    nextActiveIndex = 0;
                 }
+                keys.forEach((keyObj, index) => {
+                    keyObj.active = (index === nextActiveIndex);
+                });
+                keysChanged = true;
             }
             
             // Save updated keys
             if (keys.length > 0) {
-                saveUserApiKeys(keys);
+                keys = dedupeApiKeys(keys);
+                const cooldownResult = clearExpiredCooldowns(keys, now);
+                keys = cooldownResult.keys;
+                keysChanged = keysChanged || cooldownResult.changed;
+                if (keysChanged) {
+                    saveUserApiKeys(keys);
+                }
                 localStorage.setItem('embedded_keys_imported', 'true');
                 console.log('✅ Loaded', keys.length, 'API keys (embedded + stored)');
             }
@@ -2023,7 +2135,12 @@ function getUserApiKeys() {
     
     // If no keys yet, try to load from storage
     if (keys.length === 0) {
-        keys = JSON.parse(localStorage.getItem(GLOBAL_API_KEYS_STORAGE_KEY) || '[]');
+        keys = dedupeApiKeys(JSON.parse(localStorage.getItem(GLOBAL_API_KEYS_STORAGE_KEY) || '[]'));
+        const cooldownResult = clearExpiredCooldowns(keys, now);
+        keys = cooldownResult.keys;
+        if (cooldownResult.changed) {
+            saveUserApiKeys(keys);
+        }
     }
     
     // Cache the result
@@ -2035,41 +2152,224 @@ function getUserApiKeys() {
 
 function saveUserApiKeys(keys) {
     // Save to global storage - available to all users
-    localStorage.setItem(GLOBAL_API_KEYS_STORAGE_KEY, JSON.stringify(keys));
+    const normalizedKeys = dedupeApiKeys(keys);
+    localStorage.setItem(GLOBAL_API_KEYS_STORAGE_KEY, JSON.stringify(normalizedKeys));
     // Invalidate cache
-    cachedApiKeys = keys;
+    cachedApiKeys = normalizedKeys;
     apiKeysCacheTime = Date.now();
-    console.log('💾 Saved', keys.length, 'API keys (global, shared across all users)');
+    console.log('💾 Saved', normalizedKeys.length, 'API keys (global, shared across all users)');
 }
 
-function getActiveApiKey() {
-    const keys = getUserApiKeys();
-    
-    // Priority 1: User's own keys
-    if (keys.length > 0) {
-        const activeKey = keys.find(k => k.active) || keys[keys.length - 1];
-        if (activeKey) return activeKey.key;
+function updateApiKeyRecord(apiKeyValue, updater) {
+    const normalizedKey = sanitizeApiKey(apiKeyValue);
+    if (!normalizedKey) {
+        return false;
     }
     
-    // Priority 2: Legacy single key (backward compatibility)
-    const legacyKey = localStorage.getItem('gemini_api_key');
-    if (legacyKey) return legacyKey;
+    const keys = getUserApiKeys();
+    let changed = false;
     
-    // Priority 3: Built-in default key (always available, auto-enabled)
+    const updatedKeys = keys.map(keyObj => {
+        if (keyObj.key !== normalizedKey) {
+            return keyObj;
+        }
+        changed = true;
+        return updater({ ...keyObj });
+    });
+    
+    if (changed) {
+        saveUserApiKeys(updatedKeys);
+    }
+    
+    return changed;
+}
+
+function markApiKeyWorking(apiKeyValue) {
+    const normalizedKey = sanitizeApiKey(apiKeyValue);
+    if (!normalizedKey) {
+        return;
+    }
+    
+    const keys = getUserApiKeys();
+    let found = false;
+    let changed = false;
+    
+    const updatedKeys = keys.map(keyObj => {
+        if (keyObj.key === normalizedKey) {
+            found = true;
+            changed = true;
+            return {
+                ...keyObj,
+                active: true,
+                status: KEY_STATUS_WORKING,
+                cooldownUntil: null,
+                lastError: null,
+                failedAt: null
+            };
+        }
+        
+        if (keyObj.active) {
+            changed = true;
+            return { ...keyObj, active: false };
+        }
+        
+        return keyObj;
+    });
+    
+    if (found && changed) {
+        saveUserApiKeys(updatedKeys);
+    }
+}
+
+function markApiKeyCooldown(apiKeyValue, cooldownMs, errorMessage) {
+    updateApiKeyRecord(apiKeyValue, keyObj => ({
+        ...keyObj,
+        active: false,
+        status: KEY_STATUS_COOLDOWN,
+        cooldownUntil: Date.now() + cooldownMs,
+        lastError: errorMessage || 'Temporary API failure',
+        failedAt: new Date().toISOString()
+    }));
+}
+
+function markApiKeyInvalid(apiKeyValue, errorMessage) {
+    updateApiKeyRecord(apiKeyValue, keyObj => ({
+        ...keyObj,
+        active: false,
+        status: KEY_STATUS_INVALID,
+        cooldownUntil: null,
+        lastError: errorMessage || 'API key is invalid or expired',
+        failedAt: new Date().toISOString(),
+        invalidAt: new Date().toISOString()
+    }));
+}
+
+function buildCandidateApiKeys() {
+    const now = Date.now();
+    const keys = getUserApiKeys();
+    const candidates = [];
+    const seen = new Set();
+    
+    const activeKey = keys.find(k => k.active && k.status !== KEY_STATUS_INVALID && !isKeyOnCooldown(k, now));
+    const orderedKeys = activeKey
+        ? [activeKey, ...keys.filter(k => k.id !== activeKey.id)]
+        : [...keys];
+    
+    orderedKeys.forEach(keyObj => {
+        const key = sanitizeApiKey(keyObj.key);
+        if (!key || seen.has(key)) {
+            return;
+        }
+        
+        if (keyObj.status === KEY_STATUS_INVALID || isKeyOnCooldown(keyObj, now)) {
+            return;
+        }
+        
+        seen.add(key);
+        candidates.push({
+            key,
+            source: keyObj.embedded ? 'embedded' : 'stored',
+            isBuiltIn: false
+        });
+    });
+    
+    const legacyKey = sanitizeApiKey(localStorage.getItem('gemini_api_key'));
+    if (legacyKey && !seen.has(legacyKey)) {
+        seen.add(legacyKey);
+        candidates.push({
+            key: legacyKey,
+            source: 'legacy',
+            isBuiltIn: false
+        });
+    }
+    
     if (DEFAULT_BUILTIN_API_KEY) {
-        // Auto-enable built-in key if not explicitly disabled
         const useBuiltInKey = localStorage.getItem('use_builtin_key');
         if (useBuiltInKey !== 'false') {
-            // Set it to true if not set yet (first time)
             if (useBuiltInKey === null) {
                 localStorage.setItem('use_builtin_key', 'true');
             }
-            console.log('🔑 Using built-in default API key (auto-connected)');
-            return DEFAULT_BUILTIN_API_KEY;
+            
+            const builtInKey = sanitizeApiKey(DEFAULT_BUILTIN_API_KEY);
+            if (builtInKey && !seen.has(builtInKey)) {
+                candidates.push({
+                    key: builtInKey,
+                    source: 'builtin',
+                    isBuiltIn: true
+                });
+            }
         }
     }
     
-    return null;
+    return candidates;
+}
+
+function createGeminiError(message, { statusCode = null, errorType = 'unknown', retryable = true } = {}) {
+    const error = new Error(message);
+    error.statusCode = statusCode;
+    error.errorType = errorType;
+    error.retryable = retryable;
+    return error;
+}
+
+function classifyGeminiFailure(error) {
+    if (!error) {
+        return 'unknown';
+    }
+    
+    if (error.errorType) {
+        return error.errorType;
+    }
+    
+    const message = String(error.message || '').toLowerCase();
+    if (message.includes('request cancelled')) {
+        return 'aborted';
+    }
+    if (
+        message.includes('authentication failed') ||
+        message.includes('invalid api key') ||
+        message.includes('401') ||
+        message.includes('403')
+    ) {
+        return 'auth';
+    }
+    if (
+        message.includes('429') ||
+        message.includes('quota') ||
+        message.includes('rate limit') ||
+        message.includes('resource exhausted')
+    ) {
+        return 'rate_limit';
+    }
+    
+    return 'transient';
+}
+
+function applyKeyFailurePolicy(apiKeyValue, error) {
+    const failureType = classifyGeminiFailure(error);
+    if (failureType === 'aborted') {
+        return;
+    }
+    
+    if (failureType === 'auth') {
+        markApiKeyInvalid(apiKeyValue, error.message);
+        return;
+    }
+    
+    if (failureType === 'rate_limit') {
+        markApiKeyCooldown(apiKeyValue, KEY_RATE_LIMIT_COOLDOWN_MS, error.message);
+        return;
+    }
+    
+    markApiKeyCooldown(apiKeyValue, KEY_TRANSIENT_COOLDOWN_MS, error.message);
+}
+
+function getActiveApiKey() {
+    const candidates = buildCandidateApiKeys();
+    if (candidates.length === 0) {
+        return null;
+    }
+    return candidates[0].key;
 }
 
 function setActiveApiKey(keyId) {
@@ -2344,7 +2644,10 @@ function refreshApiKeysList() {
     if (!keysList) return;
     
     const keys = getUserApiKeys();
-    const activeKeys = keys.filter(k => k.active || k.status !== 'failed');
+    const now = Date.now();
+    const availableKeys = keys.filter(k => k.status !== KEY_STATUS_INVALID);
+    const activeKeys = availableKeys.filter(k => !isKeyOnCooldown(k, now));
+    const cooldownKeys = keys.filter(k => isKeyOnCooldown(k, now));
     const embeddedKeys = keys.filter(k => k.embedded);
     
     // Show simplified status (keys are hidden from users)
@@ -2365,6 +2668,7 @@ function refreshApiKeysList() {
             <p style="margin: 0; font-size: 11px; color: var(--text-secondary);">
                 • ${embeddedKeys.length} embedded key${embeddedKeys.length !== 1 ? 's' : ''} from code<br>
                 • ${activeKeys.length} active/working key${activeKeys.length !== 1 ? 's' : ''}<br>
+                &bull; ${cooldownKeys.length} key${cooldownKeys.length !== 1 ? 's' : ''} in cooldown<br>
                 • Automatic failover enabled - system will switch keys if one fails
             </p>
         </div>
@@ -2540,61 +2844,39 @@ Your role is to be a reliable emotional support companion that helps users feel 
 
 ${INSTRUCTIONS}`;
     
-    // Get active API key (from multi-key system)
-    let apiKey = getActiveApiKey();
-    
-    // If no active key from multi-key system, try legacy single key
-    if (!apiKey) {
-        apiKey = localStorage.getItem('gemini_api_key');
+    const keyCandidates = buildCandidateApiKeys();
+    if (keyCandidates.length === 0) {
+        throw new Error('No API key configured. Please configure at least one Gemini API key.');
     }
     
-    // If still no key, automatically use built-in key
-    if (!apiKey && DEFAULT_BUILTIN_API_KEY) {
-        console.log('🔑 Auto-connecting with built-in API key...');
-        apiKey = DEFAULT_BUILTIN_API_KEY;
-        // Enable built-in key usage
-        if (localStorage.getItem('use_builtin_key') === null) {
-            localStorage.setItem('use_builtin_key', 'true');
-        }
-    }
-    
-    if (!apiKey) {
-        throw new Error('No API key configured. Please configure an API key to use the AI assistant.');
-    }
-    
-    // Try to use the key, if it fails, try other keys
-    try {
-        return await tryGenerateWithKey(apiKey, combinedMessage, systemPrompt, originalMessages);
-    } catch (error) {
-        console.warn('⚠️ Primary API key failed, trying other keys...', error);
-        
-        // Try other user keys
-        const keys = getUserApiKeys();
-        for (const keyObj of keys) {
-            if (keyObj.key !== apiKey) {
-                try {
-                    console.log('🔄 Trying alternative API key:', keyObj.key.substring(0, 10) + '...');
-                    return await tryGenerateWithKey(keyObj.key, combinedMessage, systemPrompt, originalMessages);
-                } catch (e) {
-                    console.warn('⚠️ Alternative key also failed, trying next...');
-                    continue; // Try next key
-                }
+    let lastError = null;
+    for (const candidate of keyCandidates) {
+        try {
+            console.log('Trying API key source:', candidate.source);
+            const response = await tryGenerateWithKey(candidate.key, combinedMessage, systemPrompt, originalMessages);
+            
+            if (!candidate.isBuiltIn) {
+                markApiKeyWorking(candidate.key);
+                localStorage.setItem('gemini_api_key', candidate.key);
             }
-        }
-        
-        // If all user keys failed, try built-in key as last resort (if enabled and not already tried)
-        if (DEFAULT_BUILTIN_API_KEY && apiKey !== DEFAULT_BUILTIN_API_KEY && localStorage.getItem('use_builtin_key') !== 'false') {
-            try {
-                console.log('🔄 Trying built-in default API key as fallback...');
-                return await tryGenerateWithKey(DEFAULT_BUILTIN_API_KEY, combinedMessage, systemPrompt, originalMessages);
-            } catch (e) {
-                console.warn('⚠️ Built-in key also failed');
+            
+            return response;
+        } catch (error) {
+            const failureType = classifyGeminiFailure(error);
+            if (failureType === 'aborted') {
+                throw error;
             }
+            
+            lastError = error;
+            if (!candidate.isBuiltIn) {
+                applyKeyFailurePolicy(candidate.key, error);
+            }
+            
+            console.warn('API key failed, trying next key:', failureType, error.message);
         }
-        
-        // All keys failed
-        throw error;
     }
+    
+    throw lastError || new Error('All configured Gemini API keys failed.');
 }
 
 async function tryGenerateWithKey(apiKey, combinedMessage, systemPrompt, originalMessages = null) {
@@ -2725,48 +3007,77 @@ async function tryGenerateWithKey(apiKey, combinedMessage, systemPrompt, origina
                 
                 return aiResponse;
             } else {
-                // Not successful, try next config
-                let errorText = '';
+                let errorMessage = '';
+                let errorDetails = '';
+                
                 try {
                     const errorData = await response.json();
-                    errorText = JSON.stringify(errorData);
-                    const errorMessage = errorData.error?.message || '';
-                    console.warn(`⚠️ ${apiVersion}/models/${model} failed: ${response.status}`, errorData);
-                    
-                    // If it's a 404 "model not found", that's expected - try next model
-                    if (response.status === 404 && errorMessage.includes('not found')) {
-                        console.log(`⏭️  Model ${model} not available, trying next...`);
-                        lastError = new Error(`Model ${model} not found for API version ${apiVersion}`);
-                    } else if (response.status === 401 || response.status === 403) {
-                        // Authentication error - API key is invalid/expired
-                        console.error(`❌ API KEY AUTHENTICATION FAILED (${response.status}):`, errorMessage);
-                        window._apiKeyInvalid = true;
-                        window._apiKeyError = errorMessage || 'API key is invalid or expired';
-                        // Don't try other models if auth failed - they'll all fail
-                        throw new Error(`API key authentication failed: ${errorMessage || 'API key is invalid or expired'}`);
-                    } else {
-                        // For other errors, save the detailed error
-                        lastError = new Error(`AI API error: ${response.status} - ${errorMessage || errorText}`);
-                    }
-                } catch (e) {
-                    errorText = await response.text();
-                    console.warn(`⚠️ ${apiVersion}/models/${model} failed: ${response.status}`, errorText);
-                    lastError = new Error(`AI API error: ${response.status} - ${errorText.substring(0, 200)}`);
+                    errorMessage = errorData.error?.message || '';
+                    errorDetails = JSON.stringify(errorData);
+                } catch (parseError) {
+                    errorDetails = await response.text();
+                    errorMessage = errorDetails || response.statusText || '';
                 }
+                
+                const normalizedError = `${errorMessage} ${errorDetails}`.toLowerCase();
+                console.warn(`Model call failed: ${apiVersion}/models/${model} (${response.status})`, errorDetails || errorMessage);
+                
+                if (response.status === 404 && normalizedError.includes('not found')) {
+                    lastError = createGeminiError(
+                        `Model ${model} not found for API version ${apiVersion}`,
+                        { statusCode: 404, errorType: 'model_not_found', retryable: true }
+                    );
+                    continue;
+                }
+                
+                if (
+                    response.status === 401 ||
+                    response.status === 403 ||
+                    normalizedError.includes('api key not valid') ||
+                    normalizedError.includes('invalid api key')
+                ) {
+                    window._apiKeyInvalid = true;
+                    window._apiKeyError = errorMessage || 'API key is invalid or expired';
+                    throw createGeminiError(
+                        `API key authentication failed: ${errorMessage || 'API key is invalid or expired'}`,
+                        { statusCode: response.status, errorType: 'auth', retryable: false }
+                    );
+                }
+                
+                if (
+                    response.status === 429 ||
+                    normalizedError.includes('quota') ||
+                    normalizedError.includes('rate limit') ||
+                    normalizedError.includes('resource exhausted')
+                ) {
+                    throw createGeminiError(
+                        `API quota/rate limit reached: ${errorMessage || errorDetails || 'Rate limited'}`,
+                        { statusCode: 429, errorType: 'rate_limit', retryable: true }
+                    );
+                }
+                
+                lastError = createGeminiError(
+                    `AI API error: ${response.status} - ${errorMessage || errorDetails || response.statusText}`,
+                    { statusCode: response.status, errorType: 'api', retryable: true }
+                );
                 continue; // Try next model config
             }
         } catch (fetchError) {
-            // Check if request was aborted by user
-            if (fetchError.name === 'AbortError' || signal.aborted) {
-                console.log('🛑 Request aborted by user');
-                throw new Error('Request cancelled by user');
+            if (fetchError && fetchError.errorType) {
+                throw fetchError;
             }
             
-            console.warn(`⚠️ ${apiVersion}/models/${model} fetch error:`, fetchError.message);
-            console.warn(`⚠️ Fetch error details:`, fetchError);
+            // Check if request was aborted by user
+            if (fetchError.name === 'AbortError' || signal.aborted) {
+                console.log('Request aborted by user');
+                throw createGeminiError('Request cancelled by user', { errorType: 'aborted', retryable: false });
+            }
+            
+            console.warn(`Fetch error for ${apiVersion}/models/${model}:`, fetchError.message);
+            console.warn(`Fetch error details:`, fetchError);
             // Preserve the most informative error (prefer API errors over fetch errors)
-            if (!lastError || (lastError.message && lastError.message.includes('All API model configurations failed'))) {
-                lastError = fetchError;
+            if (!lastError || (lastError.message && lastError.message.includes(`All API model configurations failed`))) {
+                lastError = createGeminiError(fetchError.message || `Network error`, { errorType: `network`, retryable: true });
             }
             continue; // Try next model config
         }
@@ -2781,9 +3092,15 @@ async function tryGenerateWithKey(apiKey, combinedMessage, systemPrompt, origina
     const errorMsg = lastError ? lastError.message : 'Unknown error';
     
     if (errorMsg.includes('404') || errorMsg.includes('not found')) {
-        throw new Error('All API model configurations failed - None of the tried models are available for this API key. Please check your API key has access to Gemini models, or try a different API key.');
+        throw createGeminiError(
+            'All API model configurations failed - None of the tried models are available for this API key. Please check your API key has access to Gemini models, or try a different API key.',
+            { statusCode: 404, errorType: 'model_not_found', retryable: true }
+        );
     } else {
-        throw lastError || new Error('All API model configurations failed. Please check your API key and internet connection.');
+        throw lastError || createGeminiError(
+            'All API model configurations failed. Please check your API key and internet connection.',
+            { errorType: 'unknown', retryable: true }
+        );
     }
 }
 
