@@ -45,9 +45,12 @@ def after_request(response):
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
     else:
-        # Production: Cache static files for 1 hour
+        # Production: require revalidation for JS/CSS to avoid stale client bundles after deploys.
         if request.endpoint and request.endpoint.startswith('static'):
-            response.headers["Cache-Control"] = "public, max-age=3600"
+            if request.path.endswith('.js') or request.path.endswith('.css'):
+                response.headers["Cache-Control"] = "public, max-age=0, must-revalidate, no-cache"
+            else:
+                response.headers["Cache-Control"] = "public, max-age=3600"
     return response
 
 # Configuration

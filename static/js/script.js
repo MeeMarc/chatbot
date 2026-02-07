@@ -10,6 +10,23 @@ let batchTimeout = null;
 let isGeneratingResponse = false;
 let abortController = null; // For canceling AI requests
 const BATCH_DELAY = 500; // Wait 500ms after last message before responding (allows multiple rapid messages to batch together)
+const LEGACY_BROWSER_KEY_STORAGE_KEYS = [
+    'gemini_api_keys_global',
+    'gemini_api_key',
+    'embedded_keys_imported',
+    'use_builtin_key'
+];
+
+function clearLegacyBrowserApiKeyState() {
+    // Backend proxy mode: never keep Gemini API keys in browser storage.
+    LEGACY_BROWSER_KEY_STORAGE_KEYS.forEach((key) => {
+        try {
+            localStorage.removeItem(key);
+        } catch (_error) {
+            // Ignore storage cleanup errors.
+        }
+    });
+}
 
 // ========================================
 // API Helper Functions
@@ -164,6 +181,7 @@ function handleMobileKeyboard() {
 
 // Initialize app when page loads (for chat.html only)
 document.addEventListener('DOMContentLoaded', function() {
+    clearLegacyBrowserApiKeyState();
     // Check if user is logged in (for chat.html)
     // Run async checkAuthentication without blocking
     (async function() {
@@ -1864,475 +1882,15 @@ function toggleApiConfig() {
     
 }
 
-// Built-in Default API Key (Shared/Public Key)
-// ⚠️ SECURITY WARNING: This key will be visible in the browser's source code.
-// Anyone can extract it. Use this only for:
-// - Free tier API keys (no billing risk)
-// - Public/demo purposes
-// - Temporary shared access
-// For production apps, use a backend proxy instead!
-const DEFAULT_BUILTIN_API_KEY = ''; // Keep empty: do not hardcode secrets in frontend
-
-// EMBEDDED API KEYS - HIDDEN FROM USERS
-// ⚠️ Add your API keys here (up to 20 keys for maximum redundancy)
-// These keys are embedded in code and automatically used by all users
-// The system will automatically rotate through working keys if one fails
-// 
-// RECOMMENDED: Distribute keys across multiple Google accounts
-// - 3-5 keys minimum for redundancy
-// - 10 keys ideal for medium-high traffic
-// - 20 keys for very high traffic and maximum reliability
-// - Best practice: Use keys from different Google accounts (separate quotas)
-//   Example: 10 keys from Account A + 10 keys from Account B = 2x throughput
-//
-// To get free API keys: https://makersuite.google.com/app/apikey
-// Replace the placeholder keys below with your actual API keys
-const PRE_CONFIGURED_API_KEYS = [
-    '', // Key 1
-    '', // Key 2
-    '', // Key 3
-    '', // Key 4
-    '', // Key 5
-    '', // Key 6
-    '', // Key 7
-    '', // Key 8
-    '', // Key 9
-    '', // Key 10
-    '', // Key 11
-    '', // Key 12
-    '', // Key 13
-    '', // Key 14
-    '', // Key 15
-    '', // Key 16
-    '', // Key 17
-    '', // Key 18
-    '', // Key 19
-    '', // Key 20
-];
-
-// Multi-API Key Management System - GLOBAL (Shared across all users)
-// API keys are stored globally so all users can use them
-const GLOBAL_API_KEYS_STORAGE_KEY = 'gemini_api_keys_global';
-
-// Performance: Cache API keys to avoid frequent localStorage reads
-let cachedApiKeys = null;
-let apiKeysCacheTime = 0;
-const API_KEYS_CACHE_DURATION = 5000; // Cache for 5 seconds
-const KEY_RATE_LIMIT_COOLDOWN_MS = 120000; // 2 minutes
-const KEY_TRANSIENT_COOLDOWN_MS = 30000; // 30 seconds
-const KEY_STATUS_WORKING = 'working';
-const KEY_STATUS_COOLDOWN = 'cooldown';
-const KEY_STATUS_INVALID = 'invalid';
-
-function sanitizeApiKey(rawKey) {
-    if (!rawKey || typeof rawKey !== 'string') {
-        return '';
-    }
-    return rawKey.trim();
-}
-
-function normalizeKeyRecord(keyObj, index = 0) {
-    if (!keyObj || typeof keyObj !== 'object') {
-        return null;
-    }
-    
-    const normalizedKey = sanitizeApiKey(keyObj.key);
-    if (!normalizedKey || !normalizedKey.startsWith('AIza')) {
-        return null;
-    }
-    
-    const normalizedStatus = keyObj.status === KEY_STATUS_INVALID || keyObj.status === KEY_STATUS_COOLDOWN
-        ? keyObj.status
-        : KEY_STATUS_WORKING;
-    
-    return {
-        ...keyObj,
-        id: keyObj.id || `key_${index}_${Date.now()}`,
-        key: normalizedKey,
-        active: Boolean(keyObj.active),
-        status: normalizedStatus,
-        cooldownUntil: keyObj.cooldownUntil ? Number(keyObj.cooldownUntil) : null,
-        lastError: keyObj.lastError || null,
-        failedAt: keyObj.failedAt || null,
-        invalidAt: keyObj.invalidAt || null
-    };
-}
-
-function dedupeApiKeys(keys) {
-    if (!Array.isArray(keys)) {
-        return [];
-    }
-    
-    const deduped = [];
-    const seen = new Set();
-    
-    keys.forEach((keyObj, index) => {
-        const normalized = normalizeKeyRecord(keyObj, index);
-        if (!normalized || seen.has(normalized.key)) {
-            return;
-        }
-        
-        seen.add(normalized.key);
-        deduped.push(normalized);
-    });
-    
-    return deduped;
-}
-
-function isKeyOnCooldown(keyObj, now = Date.now()) {
-    if (!keyObj || keyObj.status !== KEY_STATUS_COOLDOWN || !keyObj.cooldownUntil) {
-        return false;
-    }
-    return Number(keyObj.cooldownUntil) > now;
-}
-
-function clearExpiredCooldowns(keys, now = Date.now()) {
-    let changed = false;
-    const updated = keys.map(keyObj => {
-        if (keyObj.status === KEY_STATUS_COOLDOWN && keyObj.cooldownUntil && Number(keyObj.cooldownUntil) <= now) {
-            changed = true;
-            return {
-                ...keyObj,
-                status: KEY_STATUS_WORKING,
-                cooldownUntil: null,
-                lastError: null
-            };
-        }
-        return keyObj;
-    });
-    
-    return { keys: updated, changed };
-}
-
-function getUserApiKeys() {
-    // Use cache if still valid
-    const now = Date.now();
-    if (cachedApiKeys && (now - apiKeysCacheTime) < API_KEYS_CACHE_DURATION) {
-        return cachedApiKeys;
-    }
-    
-    // Always use embedded keys first - these are the primary source
-    let keys = [];
-    let keysChanged = false;
-    
-    // Auto-import embedded keys if not already imported (always check for updates)
-    if (PRE_CONFIGURED_API_KEYS.length > 0) {
-        // Always sync embedded keys (in case you update the code)
-        const validEmbeddedKeys = PRE_CONFIGURED_API_KEYS
-            .map(key => sanitizeApiKey(key))
-            .filter(key => key && key.startsWith('AIza'));
-        
-        if (validEmbeddedKeys.length > 0) {
-            console.log('🔄 Loading embedded API keys:', validEmbeddedKeys.length, 'keys');
-            
-            // Get existing keys from storage
-            const storedKeys = dedupeApiKeys(JSON.parse(localStorage.getItem(GLOBAL_API_KEYS_STORAGE_KEY) || '[]'));
-            const existingKeyValues = new Set(storedKeys.map(k => k.key));
-            
-            // Add embedded keys that aren't already in storage
-            validEmbeddedKeys.forEach((key, index) => {
-                if (!existingKeyValues.has(key)) {
-                    keys.push({
-                        id: 'embedded_' + index,
-                        key: key,
-                        addedAt: new Date().toISOString(),
-                        active: index === 0, // First key is active by default
-                        status: KEY_STATUS_WORKING,
-                        preconfigured: true,
-                        embedded: true
-                    });
-                    keysChanged = true;
-                    console.log('✅ Added embedded key', (index + 1) + '/' + validEmbeddedKeys.length);
-                } else {
-                    // Key already exists, keep it but mark as embedded
-                    const existing = storedKeys.find(k => k.key === key);
-                    if (existing) {
-                        existing.embedded = true;
-                        keys.push(existing);
-                    }
-                }
-            });
-            
-            // Also add any non-embedded keys that were previously added (backup)
-            storedKeys.forEach(storedKey => {
-                if (!storedKey.embedded && !keys.find(k => k.key === storedKey.key)) {
-                    keys.push(storedKey);
-                }
-            });
-            
-            // Ensure first embedded key is active if no active key
-            const hasActiveKey = keys.some(k => k.active);
-            if (!hasActiveKey && keys.length > 0) {
-                let nextActiveIndex = keys.findIndex(k => k.status !== KEY_STATUS_INVALID && !isKeyOnCooldown(k, now));
-                if (nextActiveIndex < 0) {
-                    nextActiveIndex = 0;
-                }
-                keys.forEach((keyObj, index) => {
-                    keyObj.active = (index === nextActiveIndex);
-                });
-                keysChanged = true;
-            }
-            
-            // Save updated keys
-            if (keys.length > 0) {
-                keys = dedupeApiKeys(keys);
-                const cooldownResult = clearExpiredCooldowns(keys, now);
-                keys = cooldownResult.keys;
-                keysChanged = keysChanged || cooldownResult.changed;
-                if (keysChanged) {
-                    saveUserApiKeys(keys);
-                }
-                localStorage.setItem('embedded_keys_imported', 'true');
-                console.log('✅ Loaded', keys.length, 'API keys (embedded + stored)');
-            }
-        }
-    }
-    
-    // If no keys yet, try to load from storage
-    if (keys.length === 0) {
-        keys = dedupeApiKeys(JSON.parse(localStorage.getItem(GLOBAL_API_KEYS_STORAGE_KEY) || '[]'));
-        const cooldownResult = clearExpiredCooldowns(keys, now);
-        keys = cooldownResult.keys;
-        if (cooldownResult.changed) {
-            saveUserApiKeys(keys);
-        }
-    }
-    
-    // Cache the result
-    cachedApiKeys = keys;
-    apiKeysCacheTime = Date.now();
-    
-    return keys;
-}
-
-function saveUserApiKeys(keys) {
-    // Save to global storage - available to all users
-    const normalizedKeys = dedupeApiKeys(keys);
-    localStorage.setItem(GLOBAL_API_KEYS_STORAGE_KEY, JSON.stringify(normalizedKeys));
-    // Invalidate cache
-    cachedApiKeys = normalizedKeys;
-    apiKeysCacheTime = Date.now();
-    console.log('💾 Saved', normalizedKeys.length, 'API keys (global, shared across all users)');
-}
-
-function updateApiKeyRecord(apiKeyValue, updater) {
-    const normalizedKey = sanitizeApiKey(apiKeyValue);
-    if (!normalizedKey) {
-        return false;
-    }
-    
-    const keys = getUserApiKeys();
-    let changed = false;
-    
-    const updatedKeys = keys.map(keyObj => {
-        if (keyObj.key !== normalizedKey) {
-            return keyObj;
-        }
-        changed = true;
-        return updater({ ...keyObj });
-    });
-    
-    if (changed) {
-        saveUserApiKeys(updatedKeys);
-    }
-    
-    return changed;
-}
-
-function markApiKeyWorking(apiKeyValue) {
-    const normalizedKey = sanitizeApiKey(apiKeyValue);
-    if (!normalizedKey) {
-        return;
-    }
-    
-    const keys = getUserApiKeys();
-    let found = false;
-    let changed = false;
-    
-    const updatedKeys = keys.map(keyObj => {
-        if (keyObj.key === normalizedKey) {
-            found = true;
-            changed = true;
-            return {
-                ...keyObj,
-                active: true,
-                status: KEY_STATUS_WORKING,
-                cooldownUntil: null,
-                lastError: null,
-                failedAt: null
-            };
-        }
-        
-        if (keyObj.active) {
-            changed = true;
-            return { ...keyObj, active: false };
-        }
-        
-        return keyObj;
-    });
-    
-    if (found && changed) {
-        saveUserApiKeys(updatedKeys);
-    }
-}
-
-function markApiKeyCooldown(apiKeyValue, cooldownMs, errorMessage) {
-    updateApiKeyRecord(apiKeyValue, keyObj => ({
-        ...keyObj,
-        active: false,
-        status: KEY_STATUS_COOLDOWN,
-        cooldownUntil: Date.now() + cooldownMs,
-        lastError: errorMessage || 'Temporary API failure',
-        failedAt: new Date().toISOString()
-    }));
-}
-
-function markApiKeyInvalid(apiKeyValue, errorMessage) {
-    updateApiKeyRecord(apiKeyValue, keyObj => ({
-        ...keyObj,
-        active: false,
-        status: KEY_STATUS_INVALID,
-        cooldownUntil: null,
-        lastError: errorMessage || 'API key is invalid or expired',
-        failedAt: new Date().toISOString(),
-        invalidAt: new Date().toISOString()
-    }));
-}
-
-function buildCandidateApiKeys() {
-    const now = Date.now();
-    const keys = getUserApiKeys();
-    const candidates = [];
-    const seen = new Set();
-    
-    const activeKey = keys.find(k => k.active && k.status !== KEY_STATUS_INVALID && !isKeyOnCooldown(k, now));
-    const orderedKeys = activeKey
-        ? [activeKey, ...keys.filter(k => k.id !== activeKey.id)]
-        : [...keys];
-    
-    orderedKeys.forEach(keyObj => {
-        const key = sanitizeApiKey(keyObj.key);
-        if (!key || seen.has(key)) {
-            return;
-        }
-        
-        if (keyObj.status === KEY_STATUS_INVALID || isKeyOnCooldown(keyObj, now)) {
-            return;
-        }
-        
-        seen.add(key);
-        candidates.push({
-            key,
-            source: keyObj.embedded ? 'embedded' : 'stored',
-            isBuiltIn: false
-        });
-    });
-    
-    const legacyKey = sanitizeApiKey(localStorage.getItem('gemini_api_key'));
-    if (legacyKey && !seen.has(legacyKey)) {
-        seen.add(legacyKey);
-        candidates.push({
-            key: legacyKey,
-            source: 'legacy',
-            isBuiltIn: false
-        });
-    }
-    
-    if (DEFAULT_BUILTIN_API_KEY) {
-        const useBuiltInKey = localStorage.getItem('use_builtin_key');
-        if (useBuiltInKey !== 'false') {
-            if (useBuiltInKey === null) {
-                localStorage.setItem('use_builtin_key', 'true');
-            }
-            
-            const builtInKey = sanitizeApiKey(DEFAULT_BUILTIN_API_KEY);
-            if (builtInKey && !seen.has(builtInKey)) {
-                candidates.push({
-                    key: builtInKey,
-                    source: 'builtin',
-                    isBuiltIn: true
-                });
-            }
-        }
-    }
-    
-    return candidates;
-}
-
-function createGeminiError(message, { statusCode = null, errorType = 'unknown', retryable = true } = {}) {
-    const error = new Error(message);
-    error.statusCode = statusCode;
-    error.errorType = errorType;
-    error.retryable = retryable;
-    return error;
-}
-
-function classifyGeminiFailure(error) {
-    if (!error) {
-        return 'unknown';
-    }
-    
-    if (error.errorType) {
-        return error.errorType;
-    }
-    
-    const message = String(error.message || '').toLowerCase();
-    if (message.includes('request cancelled')) {
-        return 'aborted';
-    }
-    if (
-        message.includes('authentication failed') ||
-        message.includes('invalid api key') ||
-        message.includes('401') ||
-        message.includes('403')
-    ) {
-        return 'auth';
-    }
-    if (
-        message.includes('429') ||
-        message.includes('quota') ||
-        message.includes('rate limit') ||
-        message.includes('resource exhausted')
-    ) {
-        return 'rate_limit';
-    }
-    
-    return 'transient';
-}
-
-function applyKeyFailurePolicy(apiKeyValue, error) {
-    const failureType = classifyGeminiFailure(error);
-    if (failureType === 'aborted') {
-        return;
-    }
-    
-    if (failureType === 'auth') {
-        markApiKeyInvalid(apiKeyValue, error.message);
-        return;
-    }
-    
-    if (failureType === 'rate_limit') {
-        markApiKeyCooldown(apiKeyValue, KEY_RATE_LIMIT_COOLDOWN_MS, error.message);
-        return;
-    }
-    
-    markApiKeyCooldown(apiKeyValue, KEY_TRANSIENT_COOLDOWN_MS, error.message);
-}
-
-function getActiveApiKey() {
-    const candidates = buildCandidateApiKeys();
-    if (candidates.length === 0) {
-        return null;
-    }
-    return candidates[0].key;
+// Backend-only AI key mode (frontend never stores provider keys).
+function refreshApiKeysList() {
+    const keysList = document.getElementById('api-keys-list');
+    if (!keysList) return;
+    keysList.innerHTML = '<p style="margin: 0; font-size: 12px; color: var(--success-color);">Server-managed AI keys are enabled (.env on backend). Browser key storage is disabled.</p>';
 }
 
 function setActiveApiKey(keyId) {
-    const keys = getUserApiKeys();
-    keys.forEach(k => {
-        k.active = (k.id === keyId);
-    });
-    saveUserApiKeys(keys);
+    void keyId;
     refreshApiKeysList();
     updateStatusIndicator();
 }
@@ -2343,6 +1901,9 @@ async function addApiKey() {
         keyInput.value = '';
     }
 
+    clearLegacyBrowserApiKeyState();
+    refreshApiKeysList();
+
     showToast({
         type: 'info',
         title: 'Backend Key Mode',
@@ -2352,143 +1913,32 @@ async function addApiKey() {
 }
 
 function removeApiKey(keyId) {
-    showConfirmModal({
-        icon: '🗑️',
-        title: 'Remove API Key',
-        message: 'Are you sure you want to remove this API key?',
-        confirmText: 'Remove',
-        cancelText: 'Cancel',
-        type: 'danger'
-    }).then((confirmed) => {
-        if (!confirmed) return;
-        
-        const keys = getUserApiKeys();
-        const filteredKeys = keys.filter(k => k.id !== keyId);
-        
-        // If we removed the active key, activate the most recent one
-        const wasActive = keys.find(k => k.id === keyId && k.active);
-        if (wasActive && filteredKeys.length > 0) {
-            filteredKeys[0].active = true;
-        }
-        
-        saveUserApiKeys(filteredKeys);
-        refreshApiKeysList();
-        updateStatusIndicator();
-        
-        // Update legacy key if this was the active one
-        const activeKey = getActiveApiKey();
-        if (activeKey) {
-            localStorage.setItem('gemini_api_key', activeKey);
-        } else {
-            localStorage.removeItem('gemini_api_key');
-        }
-    });
+    void keyId;
+    clearLegacyBrowserApiKeyState();
+    refreshApiKeysList();
+    updateStatusIndicator();
 }
 
 function toggleBuiltInKey() {
-    const checkbox = document.getElementById('use-builtin-key');
-    const useBuiltIn = checkbox ? checkbox.checked : true;
-    localStorage.setItem('use_builtin_key', useBuiltIn.toString());
+    clearLegacyBrowserApiKeyState();
+    refreshApiKeysList();
     updateStatusIndicator();
-    
-    const builtinInfo = document.getElementById('builtin-key-info');
-    if (builtinInfo) {
-        builtinInfo.style.display = useBuiltIn ? 'block' : 'none';
-    }
-    
-    console.log('🔑 Built-in key:', useBuiltIn ? 'enabled' : 'disabled');
 }
 
-function refreshApiKeysList() {
-    const keysList = document.getElementById('api-keys-list');
-    if (!keysList) return;
-    
-    const keys = getUserApiKeys();
-    const now = Date.now();
-    const availableKeys = keys.filter(k => k.status !== KEY_STATUS_INVALID);
-    const activeKeys = availableKeys.filter(k => !isKeyOnCooldown(k, now));
-    const cooldownKeys = keys.filter(k => isKeyOnCooldown(k, now));
-    const embeddedKeys = keys.filter(k => k.embedded);
-    
-    // Show simplified status (keys are hidden from users)
-    if (keys.length === 0) {
-        keysList.innerHTML = '<p style="margin: 0; font-size: 12px; color: var(--success-color);">✅ Server-managed AI keys enabled (.env on backend). No browser key setup required.</p>';
-        return;
-    }
-    
-    // Show count and status only (keys are hidden)
-    const statusColor = activeKeys.length > 0 ? 'var(--success-color)' : 'var(--error-color)';
-    const statusIcon = activeKeys.length > 0 ? '✅' : '⚠️';
-    
-    keysList.innerHTML = `
-        <div style="padding: 8px;">
-            <p style="margin: 0 0 8px 0; font-size: 13px; font-weight: 600; color: var(--text-primary);">
-                ${statusIcon} ${keys.length} API Key${keys.length !== 1 ? 's' : ''} Configured
-            </p>
-            <p style="margin: 0; font-size: 11px; color: var(--text-secondary);">
-                • ${embeddedKeys.length} embedded key${embeddedKeys.length !== 1 ? 's' : ''} from code<br>
-                • ${activeKeys.length} active/working key${activeKeys.length !== 1 ? 's' : ''}<br>
-                &bull; ${cooldownKeys.length} key${cooldownKeys.length !== 1 ? 's' : ''} in cooldown<br>
-                • Automatic failover enabled (legacy browser-key mode)
-            </p>
-        </div>
-    `;
-}
-
-// API Key Management
 function saveApiKey() {
-    const keyInput = document.getElementById('gemini-key');
-    const key = keyInput ? keyInput.value.trim() : '';
     const model = document.getElementById('gemini-model').value;
-    
-    // Save model settings
     localStorage.setItem('gemini_model', model);
-    
-    // If a key is provided, add it using the new system
-    if (key) {
-        addApiKey().then(() => {
-            // After adding key, save other settings
-            showToast({
-                type: 'success',
-                title: 'Settings Saved',
-                message: 'Using ' + model + ' (FREE Tier) with humorous and emotional responses!',
-                duration: 5000
-            });
-            console.log('✅ Settings saved');
-            console.log('📊 Selected model:', model);
-            
-            // Hide setup prompt and show chat interface
-            const setupPrompt = document.getElementById('setup-prompt');
-            const prechat = document.getElementById('prechat');
-            const chat = document.getElementById('chat');
-            
-            if (setupPrompt) setupPrompt.style.display = 'none';
-            if (prechat) prechat.style.display = 'none';
-            if (chat) chat.style.display = 'flex';
-            
-            updateStatusIndicator();
-        });
-    } else {
-        // Just save model settings
-        showToast({
-            type: 'success',
-            title: 'Settings Saved',
-            message: 'Your settings have been saved successfully!',
-            duration: 4000
-        });
-        console.log('✅ Settings saved');
-        console.log('📊 Selected model:', model);
-        
-        // In backend-proxy mode, no browser key is required.
-        showToast({
-            type: 'info',
-            title: 'Server Keys Active',
-            message: 'AI keys are managed securely on the backend environment.',
-            duration: 4500
-        });
-    }
-}
 
+    showToast({
+        type: 'success',
+        title: 'Settings Saved',
+        message: 'Server key mode enabled. AI keys are read from backend .env only.',
+        duration: 4000
+    });
+
+    refreshApiKeysList();
+    updateStatusIndicator();
+}
 async function callBackendAIGenerate(prompt, generationConfig = {}, options = {}) {
     const preferredModel = localStorage.getItem('gemini_model') || 'gemini-1.5-flash';
     const payload = {
@@ -2648,5 +2098,6 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
 });
+
 
 
