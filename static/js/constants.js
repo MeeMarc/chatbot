@@ -307,13 +307,13 @@ const API_DOCS_SWAGGER_UI = true;
 // Prompt templates and system behavior
 const PROMPT_MAX_TOKENS = 4096;
 const PROMPT_CONTEXT_WINDOW = 10;
-const RESTRICTION = `STRICT LANGUAGE RULE: You can ONLY respond in Filipino or English. NO OTHER LANGUAGES ARE ALLOWED. This is non-negotiable.`;
+const RESTRICTION = ``;
 const PROMPT_RETRY_ON_ERROR = true;
-const INSTRUCTIONS = `LANGUAGE INSTRUCTIONS (MUST FOLLOW):
-1. If the user writes in Filipino/Tagalog → Reply in Filipino
-2. If the user writes in English → Reply in English
-3. If the user writes in ANY other language (Spanish, Japanese, Chinese, Korean, French, etc.) → Reply in English and say: "I can only respond in Filipino or English. Please write your message in one of these languages."
-4. NEVER respond in any language other than Filipino or English, even if the user asks you to.`;
+const INSTRUCTIONS = `LANGUAGE INSTRUCTIONS:
+1. Reply in the same language as the user whenever possible.
+2. If the user asks for a specific language, follow that request.
+3. If multilingual context appears, prioritize the language the user most recently used.
+4. Never restrict replies to only Filipino or English.`;
 const PROMPT_FALLBACK_ENABLED = true;
 
 // Experimental features (disabled by default)
@@ -624,3 +624,4 @@ const DEPLOY_ON_MERGE = false;
 const ROLLBACK_ON_FAILURE = true;
 const CANARY_DEPLOYMENTS = false;
 const BLUE_GREEN_DEPLOYMENTS = false;
+
