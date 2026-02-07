@@ -10,6 +10,7 @@ let batchTimeout = null;
 let isGeneratingResponse = false;
 let abortController = null; // For canceling AI requests
 const BATCH_DELAY = 500; // Wait 500ms after last message before responding (allows multiple rapid messages to batch together)
+const AI_BACKEND_REQUEST_TIMEOUT_MS = 7000;
 const LEGACY_BROWSER_KEY_STORAGE_KEYS = [
     'gemini_api_keys_global',
     'gemini_api_key',
@@ -1943,6 +1944,36 @@ function sleepMs(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function createAbortSignalWithTimeout(parentSignal, timeoutMs) {
+    const controller = new AbortController();
+    let timeoutId = null;
+
+    const abortFromParent = () => controller.abort();
+    if (parentSignal) {
+        if (parentSignal.aborted) {
+            controller.abort();
+        } else {
+            parentSignal.addEventListener('abort', abortFromParent, { once: true });
+        }
+    }
+
+    if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+        timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    }
+
+    const cleanup = () => {
+        if (timeoutId) {
+            clearTimeout(timeoutId);
+            timeoutId = null;
+        }
+        if (parentSignal) {
+            parentSignal.removeEventListener('abort', abortFromParent);
+        }
+    };
+
+    return { signal: controller.signal, cleanup };
+}
+
 function shouldRetryAIRequest(error) {
     const message = String(error?.message || '').toLowerCase();
     return (
@@ -2161,7 +2192,7 @@ async function callBackendAIGenerate(prompt, generationConfig = {}, options = {}
         }
     };
 
-    const retryDelays = [0, 400, 1200];
+    const retryDelays = [0];
     let lastError = null;
 
     for (let attempt = 0; attempt < retryDelays.length; attempt++) {
@@ -2172,12 +2203,13 @@ async function callBackendAIGenerate(prompt, generationConfig = {}, options = {}
             await sleepMs(retryDelays[attempt]);
         }
 
+        const timedRequest = createAbortSignalWithTimeout(options.signal, AI_BACKEND_REQUEST_TIMEOUT_MS);
         try {
             const response = await apiRequest('/api/ai/generate', {
                 method: 'POST',
                 skipAuth: true,
                 body: JSON.stringify(payload),
-                signal: options.signal
+                signal: timedRequest.signal
             });
 
             const text = response?.text?.trim?.();
@@ -2186,14 +2218,23 @@ async function callBackendAIGenerate(prompt, generationConfig = {}, options = {}
             }
             return text;
         } catch (error) {
-            if (error.name === 'AbortError' || options.signal?.aborted) {
-                throw new Error('Request cancelled by user');
+            if (error.name === 'AbortError') {
+                if (options.signal?.aborted) {
+                    throw new Error('Request cancelled by user');
+                }
+                lastError = new Error('AI request timeout. Please try again.');
+            } else {
+                lastError = error;
             }
 
-            lastError = error;
-            if (attempt === retryDelays.length - 1 || !shouldRetryAIRequest(error)) {
+            if (options.signal?.aborted) {
+                throw new Error('Request cancelled by user');
+            }
+            if (attempt === retryDelays.length - 1 || !shouldRetryAIRequest(lastError)) {
                 break;
             }
+        } finally {
+            timedRequest.cleanup();
         }
     }
 

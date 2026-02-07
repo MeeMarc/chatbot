@@ -90,8 +90,12 @@ GEMINI_KEY_CURSOR = 0
 GEMINI_RATE_LIMIT_COOLDOWN_SECONDS = 120
 GEMINI_AUTH_COOLDOWN_SECONDS = 6 * 60 * 60
 GEMINI_TRANSIENT_COOLDOWN_SECONDS = 20
-GEMINI_REQUEST_PASSES = 3
+GEMINI_REQUEST_PASSES = 2
 GEMINI_MAX_PROMPT_CHARS = 12000
+GEMINI_HTTP_TIMEOUT_SECONDS = 7
+GEMINI_REQUEST_DEADLINE_SECONDS = 12
+GEMINI_MAX_ATTEMPTS_PER_REQUEST = 12
+GEMINI_MODEL_FALLBACK_LIMIT = 3
 
 
 def _clamp_float(value, default, minimum, maximum):
@@ -258,7 +262,7 @@ def call_gemini_generate(api_key, model, prompt, generation_config):
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=30) as response:
+        with urllib.request.urlopen(req, timeout=GEMINI_HTTP_TIMEOUT_SECONDS) as response:
             raw = response.read().decode("utf-8")
             data = json.loads(raw)
             text = (
@@ -417,6 +421,8 @@ def return_db_connection(conn, close_conn=False):
 
 def execute_query(query, params=None, fetch=True):
     """Execute a database query"""
+    global db_pool
+
     if not DATABASE_URL:
         raise Exception("DATABASE_URL environment variable is not set. Please create a .env file with your database connection string.")
 
@@ -463,6 +469,12 @@ def execute_query(query, params=None, fetch=True):
                 or "terminating connection" in message
                 or "connection not open" in message
                 or "ssl connection has been closed unexpectedly" in message
+                or "ssl syscall error: eof detected" in message
+                or "eof detected" in message
+                or "could not receive data from server" in message
+                or "could not send data to server" in message
+                or "connection reset by peer" in message
+                or "broken pipe" in message
             )
 
             try:
@@ -471,6 +483,15 @@ def execute_query(query, params=None, fetch=True):
                 pass
 
             if transient_conn_issue and attempt < (max_attempts - 1):
+                # Refresh pool on transient transport-level errors before retrying.
+                try:
+                    if db_pool:
+                        db_pool.closeall()
+                except Exception:
+                    pass
+                db_pool = None
+                init_db_pool()
+
                 logger.warning(
                     "Transient DB connection issue detected. Retrying query (%s/%s). Error: %s",
                     attempt + 1,
@@ -623,19 +644,44 @@ def ai_generate():
         logger.error("Gemini API keys are not configured in environment variables.")
         return jsonify({'error': 'AI service is not configured on the server.'}), 500
 
-    model_candidates = build_model_candidates(preferred_model)
+    model_candidates = build_model_candidates(preferred_model)[:GEMINI_MODEL_FALLBACK_LIMIT]
     last_error = "AI service request failed."
     error_stats = {}
-    retry_waits = [0.0, 0.35, 0.9][:max(1, GEMINI_REQUEST_PASSES)]
+    retry_waits = [0.0, 0.25, 0.6][:max(1, GEMINI_REQUEST_PASSES)]
+    started_at = time.time()
+    attempts_made = 0
+    deadline_exceeded = False
+    max_attempts_hit = False
 
     for pass_index, wait_seconds in enumerate(retry_waits):
+        elapsed = time.time() - started_at
+        if elapsed >= GEMINI_REQUEST_DEADLINE_SECONDS:
+            deadline_exceeded = True
+            break
+
         if wait_seconds > 0:
-            time.sleep(wait_seconds)
+            remaining = GEMINI_REQUEST_DEADLINE_SECONDS - elapsed
+            if remaining <= 0:
+                deadline_exceeded = True
+                break
+            time.sleep(min(wait_seconds, remaining))
 
         prioritized_keys = _build_prioritized_keys(api_keys)
+        stop_outer_loops = False
         for api_key in prioritized_keys:
             key_hit_rate_limit = False
             for model in model_candidates:
+                if attempts_made >= GEMINI_MAX_ATTEMPTS_PER_REQUEST:
+                    max_attempts_hit = True
+                    stop_outer_loops = True
+                    break
+
+                if (time.time() - started_at) >= GEMINI_REQUEST_DEADLINE_SECONDS:
+                    deadline_exceeded = True
+                    stop_outer_loops = True
+                    break
+
+                attempts_made += 1
                 result = call_gemini_generate(api_key, model, prompt, generation_config)
                 if result.get('ok'):
                     _clear_key_cooldown(api_key)
@@ -665,6 +711,12 @@ def ai_generate():
             if key_hit_rate_limit:
                 _mark_key_result(api_key, 'rate_limit')
 
+            if stop_outer_loops:
+                break
+
+        if stop_outer_loops:
+            break
+
         logger.warning(
             "Gemini request pass %s/%s failed. Retrying with next key/model set.",
             pass_index + 1,
@@ -674,8 +726,15 @@ def ai_generate():
     is_dev = os.getenv('FLASK_ENV') == 'development' or os.getenv('NODE_ENV') == 'development'
     dominant_error_type = max(error_stats, key=error_stats.get) if error_stats else 'unknown'
 
+    final_error_type = dominant_error_type
     if is_dev:
         safe_error = last_error
+    elif deadline_exceeded:
+        safe_error = 'AI request timeout. Please try again.'
+        final_error_type = 'timeout'
+    elif max_attempts_hit:
+        safe_error = 'AI service is busy right now. Please try again.'
+        final_error_type = 'busy'
     elif dominant_error_type == 'rate_limit':
         safe_error = 'AI usage limit reached. Please wait and try again shortly.'
     elif dominant_error_type == 'auth':
@@ -687,7 +746,7 @@ def ai_generate():
 
     return jsonify({
         'error': safe_error,
-        'errorType': dominant_error_type
+        'errorType': final_error_type
     }), 503
 
 # ========================================
