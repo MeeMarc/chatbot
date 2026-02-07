@@ -10,6 +10,7 @@ from psycopg2.pool import SimpleConnectionPool
 from psycopg2.extras import RealDictCursor
 import os
 import json
+import time
 import urllib.request
 import urllib.error
 from dotenv import load_dotenv
@@ -84,6 +85,14 @@ GEMINI_MODEL_ALIASES = {
     "gemini-2.0-flash-exp": "gemini-2.0-flash",
 }
 
+GEMINI_KEY_STATE = {}
+GEMINI_KEY_CURSOR = 0
+GEMINI_RATE_LIMIT_COOLDOWN_SECONDS = 120
+GEMINI_AUTH_COOLDOWN_SECONDS = 6 * 60 * 60
+GEMINI_TRANSIENT_COOLDOWN_SECONDS = 20
+GEMINI_REQUEST_PASSES = 2
+GEMINI_MAX_PROMPT_CHARS = 12000
+
 
 def _clamp_float(value, default, minimum, maximum):
     """Parse float with hard bounds."""
@@ -101,6 +110,78 @@ def _clamp_int(value, default, minimum, maximum):
     except (TypeError, ValueError):
         return default
     return max(minimum, min(maximum, parsed))
+
+
+def _shorten_prompt(prompt, max_chars=GEMINI_MAX_PROMPT_CHARS):
+    """Trim oversized prompts while preserving beginning and end context."""
+    if len(prompt) <= max_chars:
+        return prompt
+
+    head = int(max_chars * 0.45)
+    tail = int(max_chars * 0.45)
+    return (
+        prompt[:head]
+        + "\n\n[Conversation context trimmed for reliability]\n\n"
+        + prompt[-tail:]
+    )
+
+
+def _build_prioritized_keys(api_keys):
+    """Return keys ordered by cooldown state and round-robin cursor."""
+    global GEMINI_KEY_CURSOR
+    now = time.time()
+
+    available = []
+    cooling = []
+    for key in api_keys:
+        state = GEMINI_KEY_STATE.get(key, {})
+        cooldown_until = float(state.get("cooldown_until", 0))
+        if cooldown_until > now:
+            cooling.append(key)
+        else:
+            available.append(key)
+
+    # If every key is in cooldown, still allow attempts with all keys.
+    active_pool = available or list(api_keys)
+    if not active_pool:
+        return []
+
+    start = GEMINI_KEY_CURSOR % len(active_pool)
+    ordered = active_pool[start:] + active_pool[:start]
+    GEMINI_KEY_CURSOR = (GEMINI_KEY_CURSOR + 1) % len(active_pool)
+
+    # Keys still in cooldown are tried after non-cooldown keys.
+    for key in cooling:
+        if key not in ordered:
+            ordered.append(key)
+
+    return ordered
+
+
+def _mark_key_result(api_key, err_type):
+    """Track temporary key cooldowns based on failure class."""
+    now = time.time()
+    state = GEMINI_KEY_STATE.get(api_key, {})
+
+    if err_type == "auth":
+        state["cooldown_until"] = now + GEMINI_AUTH_COOLDOWN_SECONDS
+    elif err_type == "rate_limit":
+        state["cooldown_until"] = now + GEMINI_RATE_LIMIT_COOLDOWN_SECONDS
+    elif err_type in ("network", "transient"):
+        state["cooldown_until"] = now + GEMINI_TRANSIENT_COOLDOWN_SECONDS
+    else:
+        # Keep existing cooldown for unknown failures.
+        state.setdefault("cooldown_until", 0)
+
+    GEMINI_KEY_STATE[api_key] = state
+
+
+def _clear_key_cooldown(api_key):
+    """Reset cooldown after a successful request."""
+    state = GEMINI_KEY_STATE.get(api_key, {})
+    if state:
+        state["cooldown_until"] = 0
+        GEMINI_KEY_STATE[api_key] = state
 
 
 def get_gemini_api_keys():
@@ -220,6 +301,8 @@ def call_gemini_generate(api_key, model, prompt, generation_config):
             err_type = "rate_limit"
         elif status == 404 and "not found" in lowered:
             err_type = "model_not_found"
+        elif status >= 500:
+            err_type = "transient"
         else:
             err_type = "api"
 
@@ -357,6 +440,11 @@ def chat():
     """Chat page"""
     return render_template('chat.html')
 
+@app.route('/favicon.ico')
+def favicon():
+    """Silence browser favicon 404s if no favicon file is configured."""
+    return ('', 204)
+
 # ========================================
 # HELPER FUNCTIONS
 # ========================================
@@ -432,6 +520,8 @@ def ai_generate():
     if not prompt:
         return jsonify({'error': 'Prompt is required'}), 400
 
+    prompt = _shorten_prompt(prompt)
+
     preferred_model = (data.get('preferredModel') or '').strip()
     generation_input = data.get('generationConfig') or {}
 
@@ -449,26 +539,40 @@ def ai_generate():
 
     model_candidates = build_model_candidates(preferred_model)
     last_error = "AI service request failed."
+    retry_waits = [0.0, 0.35][:max(1, GEMINI_REQUEST_PASSES)]
 
-    for api_key in api_keys:
-        for model in model_candidates:
-            result = call_gemini_generate(api_key, model, prompt, generation_config)
-            if result.get('ok'):
-                return jsonify({
-                    'text': result['text'],
-                    'model': result['model'],
-                    'provider': 'gemini'
-                })
+    for pass_index, wait_seconds in enumerate(retry_waits):
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
 
-            last_error = result.get('error') or last_error
-            err_type = result.get('error_type')
+        prioritized_keys = _build_prioritized_keys(api_keys)
+        for api_key in prioritized_keys:
+            for model in model_candidates:
+                result = call_gemini_generate(api_key, model, prompt, generation_config)
+                if result.get('ok'):
+                    _clear_key_cooldown(api_key)
+                    return jsonify({
+                        'text': result['text'],
+                        'model': result['model'],
+                        'provider': 'gemini'
+                    })
 
-            # These failures are key-scoped, so skip to the next key.
-            if err_type in ('auth', 'rate_limit'):
-                break
+                last_error = result.get('error') or last_error
+                err_type = result.get('error_type')
+                _mark_key_result(api_key, err_type)
 
-            # model_not_found and generic errors continue trying next model.
-            continue
+                # These failures are key-scoped, so skip to the next key.
+                if err_type in ('auth', 'rate_limit'):
+                    break
+
+                # model_not_found and generic errors continue trying next model.
+                continue
+
+        logger.warning(
+            "Gemini request pass %s/%s failed. Retrying with next key/model set.",
+            pass_index + 1,
+            len(retry_waits),
+        )
 
     is_dev = os.getenv('FLASK_ENV') == 'development' or os.getenv('NODE_ENV') == 'development'
     safe_error = last_error if is_dev else 'AI service request failed. Please try again.'

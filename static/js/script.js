@@ -16,6 +16,8 @@ const LEGACY_BROWSER_KEY_STORAGE_KEYS = [
     'embedded_keys_imported',
     'use_builtin_key'
 ];
+const SUPPORTED_CHAT_LANGUAGES = ['ilokano', 'filipino', 'english'];
+const LANGUAGE_PREF_STORAGE_KEY = 'chat_reply_language_preference';
 
 function clearLegacyBrowserApiKeyState() {
     // Backend proxy mode: never keep Gemini API keys in browser storage.
@@ -26,6 +28,17 @@ function clearLegacyBrowserApiKeyState() {
             // Ignore storage cleanup errors.
         }
     });
+}
+
+function getStoredLanguagePreference() {
+    const value = String(localStorage.getItem(LANGUAGE_PREF_STORAGE_KEY) || '').toLowerCase();
+    return SUPPORTED_CHAT_LANGUAGES.includes(value) ? value : null;
+}
+
+function setStoredLanguagePreference(language) {
+    if (SUPPORTED_CHAT_LANGUAGES.includes(language)) {
+        localStorage.setItem(LANGUAGE_PREF_STORAGE_KEY, language);
+    }
 }
 
 // ========================================
@@ -1725,43 +1738,17 @@ async function processBatchedMessages() {
         console.error("❌ AI API error details:", error);
         console.error("❌ Error message:", error.message);
         console.error("❌ Error stack:", error.stack);
-        
-        // Parse error message for better user feedback
-        let errorMessage = "I'm having trouble connecting right now. 💙\n\n";
-        const errorMsg = error.message || '';
-        
-        // Simplified error messages focused on internet connectivity
-        if (errorMsg.includes('401') || errorMsg.includes('API key') || errorMsg.includes('authentication') || errorMsg.includes('authentication failed')) {
-            errorMessage += "🔑 Connection Issue: Unable to authenticate with the AI service.\n\n";
-            errorMessage += "💡 This usually happens due to internet connectivity problems or temporary service issues.\n";
-            errorMessage += "Please check your internet connection and try again in a moment.";
-        } else if (errorMsg.includes('403')) {
-            errorMessage += "🚫 Access Denied: Unable to connect to the AI service.\n\n";
-            errorMessage += "💡 This may be a temporary connectivity issue. Please check your internet connection and try again.";
-        } else if (errorMsg.includes('429') || errorMsg.includes('rate limit')) {
-            errorMessage += "⏱️ Too Many Requests: The service is temporarily busy.\n\n";
-            errorMessage += "💡 Please wait a moment and try again. This usually resolves quickly.";
-        } else if (errorMsg.includes('400')) {
-            errorMessage += "❌ Connection Error: Unable to process the request.\n\n";
-            errorMessage += "💡 This might be a temporary connectivity issue. Please check your internet connection and try again.";
-        } else if (errorMsg.includes('not found') || errorMsg.includes('404')) {
-            errorMessage += "🔍 Service Temporarily Unavailable: The AI service is having issues.\n\n";
-            errorMessage += "💡 Please check your internet connection and try again. The bot will automatically retry with different configurations.";
-        } else if (errorMsg.includes('All API model configurations failed') || errorMsg.includes('All models')) {
-            errorMessage += "🔄 Connection Failed: Unable to reach the AI service.\n\n";
-            errorMessage += "💡 Please check your internet connection and try again. This is usually a temporary network issue.";
-        } else if (errorMsg.includes('fetch') || errorMsg.includes('network') || errorMsg.includes('Failed to fetch')) {
-            errorMessage += "🌐 Network Error: Cannot connect to the internet.\n\n";
-            errorMessage += "💡 Please check your internet connection and try again.";
-        } else if (errorMsg.includes('is not defined')) {
-            errorMessage += "⚠️ Service Error: An unexpected error occurred.\n\n";
-            errorMessage += "💡 Please check your internet connection and refresh the page. If the issue persists, try again in a few moments.";
-        } else {
-            errorMessage += "⚠️ Connection Error: Unable to reach the AI service.\n\n";
-            errorMessage += "💡 Please check your internet connection and try again. This is usually a temporary network issue.";
-        }
-        
-        appendAI(errorMessage);
+
+        const latestUserMessage = messagesToProcess[messagesToProcess.length - 1] || combinedMessage;
+        const fallbackReply = buildLocalFallbackReply(latestUserMessage);
+        appendAI(fallbackReply);
+
+        showToast({
+            type: 'warning',
+            title: 'Temporary AI Issue',
+            message: 'Using backup reply mode for this message. Please try again in a few seconds.',
+            duration: 3500
+        });
         console.error("Full error object:", error);
     }
     
@@ -1939,6 +1926,117 @@ function saveApiKey() {
     refreshApiKeysList();
     updateStatusIndicator();
 }
+
+function sleepMs(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function shouldRetryAIRequest(error) {
+    const message = String(error?.message || '').toLowerCase();
+    return (
+        message.includes('service unavailable') ||
+        message.includes('request failed') ||
+        message.includes('temporarily') ||
+        message.includes('timeout') ||
+        message.includes('rate limit') ||
+        message.includes('429') ||
+        message.includes('503') ||
+        message.includes('network') ||
+        message.includes('failed to fetch')
+    );
+}
+
+function detectFallbackLanguage(text) {
+    const message = String(text || '').toLowerCase();
+
+    // Explicit preference in the user's latest message overrides everything.
+    if (/\b(ilokano|ilocano|iloco)\b/.test(message)) {
+        setStoredLanguagePreference('ilokano');
+        return 'ilokano';
+    }
+    if (/\b(filipino|tagalog)\b/.test(message)) {
+        setStoredLanguagePreference('filipino');
+        return 'filipino';
+    }
+    if (/\b(english)\b/.test(message)) {
+        setStoredLanguagePreference('english');
+        return 'english';
+    }
+
+    const unsupportedLanguageTerms = [
+        'kapampangan', 'pampango', 'bisaya', 'cebuano', 'hiligaynon', 'ilonggo',
+        'waray', 'chavacano', 'bicol', 'bikol', 'pangasinan',
+        'spanish', 'espanol', 'french', 'german', 'italian', 'portuguese',
+        'japanese', 'korean', 'chinese', 'mandarin', 'arabic', 'hindi', 'thai', 'vietnamese'
+    ];
+    if (unsupportedLanguageTerms.some((term) => message.includes(term))) return 'unsupported';
+
+    // If message contains clearly non-Latin scripts, treat as unsupported for now.
+    if (/[\u0400-\u04FF\u0600-\u06FF\u0900-\u097F\u0980-\u09FF\u3040-\u30FF\u31F0-\u31FF\u4E00-\u9FFF\uAC00-\uD7AF\u0E00-\u0E7F]/.test(message)) {
+        return 'unsupported';
+    }
+
+    // Lightweight lexical hints.
+    if (/\b(adda|haan|wen|anya|kasta|agyaman|manong|manang|kabsat|sika)\b/.test(message)) {
+        setStoredLanguagePreference('ilokano');
+        return 'ilokano';
+    }
+    if (/\b(ako|ikaw|po|kamusta|salamat|hindi|oo|pwede|gusto)\b/.test(message)) {
+        setStoredLanguagePreference('filipino');
+        return 'filipino';
+    }
+    if (/\b(the|and|is|are|you|please|can|could|what|how|help)\b/.test(message)) {
+        setStoredLanguagePreference('english');
+        return 'english';
+    }
+
+    const storedPreference = getStoredLanguagePreference();
+    if (storedPreference) {
+        return storedPreference;
+    }
+
+    // Default to English when unclear.
+    return 'english';
+}
+
+function buildUnsupportedLanguageNotice() {
+    return "Sorry, I can only reply in Ilokano, Filipino, or English for now. I can't reply in that language/dialect yet.";
+}
+
+function buildLocalFallbackReply(userMessage) {
+    const language = detectFallbackLanguage(userMessage);
+
+    if (language === 'unsupported') {
+        return buildUnsupportedLanguageNotice();
+    }
+    if (language === 'filipino') {
+        return 'Narito pa rin ako para sa iyo. May pansamantalang problema sa koneksyon sa AI service ngayon. Pakisubukang ipadala muli ang mensahe mo pagkalipas ng ilang segundo.';
+    }
+    if (language === 'ilokano') {
+        return 'Addaak pay ditoy para kenka. Adda bassit a parikut iti koneksyon iti AI service ita. Padasem manen ti mensahem kalpasan ti bassit a segundo.';
+    }
+
+    return 'I am still here with you. There is a temporary connection issue with the AI service right now. Please try sending your message again in a few seconds.';
+}
+
+function buildTaskFulfillmentDirective(latestUserMessage, detectedLanguage) {
+    const message = String(latestUserMessage || '').toLowerCase();
+    const asksForConcreteLanguageItems = /\b(word|words|phrase|phrases|vocabulary|translate|translation|example|examples|sentence|sentences|meaning|meanings|sasao|salita|kahulugan)\b/.test(message);
+
+    if (asksForConcreteLanguageItems) {
+        return `TASK MODE: Concrete language help.
+- Satisfy the user's request directly.
+- Provide at least 5 concrete items when they ask for words/phrases/examples.
+- Keep the whole reply in ${detectedLanguage}.
+- Do not switch to another language unless the user asks to switch.`;
+    }
+
+    return `TASK MODE: General response.
+- Prioritize answering the user's exact request first.
+- Keep the whole reply in ${detectedLanguage}.
+- Be concise but complete.`;
+}
+
 async function callBackendAIGenerate(prompt, generationConfig = {}, options = {}) {
     const preferredModel = localStorage.getItem('gemini_model') || 'gemini-2.5-flash';
     const payload = {
@@ -1952,32 +2050,54 @@ async function callBackendAIGenerate(prompt, generationConfig = {}, options = {}
         }
     };
 
-    const response = await apiRequest('/api/ai/generate', {
-        method: 'POST',
-        skipAuth: true,
-        body: JSON.stringify(payload),
-        signal: options.signal
-    });
+    const retryDelays = [0, 400, 1200];
+    let lastError = null;
 
-    const text = response?.text?.trim?.();
-    if (!text) {
-        throw new Error('Invalid AI response from backend');
+    for (let attempt = 0; attempt < retryDelays.length; attempt++) {
+        if (attempt > 0) {
+            if (options.signal?.aborted) {
+                throw new Error('Request cancelled by user');
+            }
+            await sleepMs(retryDelays[attempt]);
+        }
+
+        try {
+            const response = await apiRequest('/api/ai/generate', {
+                method: 'POST',
+                skipAuth: true,
+                body: JSON.stringify(payload),
+                signal: options.signal
+            });
+
+            const text = response?.text?.trim?.();
+            if (!text) {
+                throw new Error('Invalid AI response from backend');
+            }
+            return text;
+        } catch (error) {
+            if (error.name === 'AbortError' || options.signal?.aborted) {
+                throw new Error('Request cancelled by user');
+            }
+
+            lastError = error;
+            if (attempt === retryDelays.length - 1 || !shouldRetryAIRequest(error)) {
+                break;
+            }
+        }
     }
-    return text;
+
+    throw (lastError || new Error('AI service request failed. Please try again.'));
 }
 
 // Generate conversation title from first user message
 async function generateConversationTitle(firstMessage) {
     try {
-        const titlePrompt = `Based on this message, generate a short, concise conversation title (maximum 6 words, no quotes or punctuation at the end). Just return the title text only:\n\n"${firstMessage}"`;
-        const title = await callBackendAIGenerate(titlePrompt, {
-            maxOutputTokens: 20,
-            temperature: 0.7,
-            topP: 0.95,
-            topK: 40
-        });
+        // Local title generation reduces extra AI calls and lowers error frequency.
+        const text = String(firstMessage || '').replace(/\s+/g, ' ').trim();
+        if (!text) return null;
 
-        let cleanTitle = title.replace(/^["']|["']$/g, '').replace(/\.$/, '').trim();
+        const words = text.split(' ').slice(0, 6);
+        let cleanTitle = words.join(' ').replace(/[.,!?;:]+$/, '').trim();
         if (cleanTitle.length > 50) {
             cleanTitle = cleanTitle.substring(0, 47) + '...';
         }
@@ -2001,6 +2121,16 @@ async function generateAIResponse(combinedMessage, originalMessages = null) {
     } else {
         // Fallback: add combined message
         conversationHistory.push({ role: "user", content: combinedMessage });
+    }
+
+    const latestUserMessage = (originalMessages && originalMessages.length > 0)
+        ? originalMessages[originalMessages.length - 1]
+        : combinedMessage;
+    const detectedLanguage = detectFallbackLanguage(latestUserMessage);
+    if (detectedLanguage === 'unsupported') {
+        const notice = buildUnsupportedLanguageNotice();
+        conversationHistory.push({ role: "assistant", content: notice });
+        return notice;
     }
     
     // Enhanced system prompt as Personal Guide for Emotional Well-being
@@ -2026,12 +2156,14 @@ ${INSTRUCTIONS}`;
         m.role === 'user' ? `User: ${m.content}` : `Assistant: ${m.content}`
     ).join('\n');
 
-    const prompt = `${systemPrompt}\n\nConversation history:\n${context}\n\nUser: ${combinedMessage}\nAssistant:`;
+    const turnLanguageDirective = `CURRENT TURN LANGUAGE: Reply in ${detectedLanguage}. If the user asks to switch to Ilokano, Filipino, or English, switch immediately.`;
+    const taskDirective = buildTaskFulfillmentDirective(latestUserMessage, detectedLanguage);
+    const prompt = `${systemPrompt}\n\n${turnLanguageDirective}\n\n${taskDirective}\n\nConversation history:\n${context}\n\nUser: ${combinedMessage}\nAssistant:`;
 
     abortController = new AbortController();
     try {
         const aiResponse = await callBackendAIGenerate(prompt, {
-            temperature: 0.9,
+            temperature: 0.75,
             maxOutputTokens: 300,
             topP: 0.95,
             topK: 40
@@ -2098,6 +2230,9 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
 });
+
+
+
 
 
 
