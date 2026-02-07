@@ -90,12 +90,13 @@ GEMINI_KEY_CURSOR = 0
 GEMINI_RATE_LIMIT_COOLDOWN_SECONDS = 120
 GEMINI_AUTH_COOLDOWN_SECONDS = 6 * 60 * 60
 GEMINI_TRANSIENT_COOLDOWN_SECONDS = 20
-GEMINI_REQUEST_PASSES = 2
+GEMINI_REQUEST_PASSES = 1
 GEMINI_MAX_PROMPT_CHARS = 12000
-GEMINI_HTTP_TIMEOUT_SECONDS = 7
-GEMINI_REQUEST_DEADLINE_SECONDS = 12
-GEMINI_MAX_ATTEMPTS_PER_REQUEST = 12
-GEMINI_MODEL_FALLBACK_LIMIT = 3
+GEMINI_HTTP_TIMEOUT_SECONDS = 6
+GEMINI_REQUEST_DEADLINE_SECONDS = 10
+GEMINI_MAX_ATTEMPTS_PER_REQUEST = 6
+GEMINI_MODEL_FALLBACK_LIMIT = 2
+GEMINI_MAX_KEYS_PER_REQUEST = 4
 
 
 def _clamp_float(value, default, minimum, maximum):
@@ -342,7 +343,12 @@ def init_db_pool():
             minconn=1,
             maxconn=20,
             dsn=DATABASE_URL,
-            connect_timeout=10
+            connect_timeout=10,
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=5,
+            application_name='emotional-ai-chatbot'
         )
         logger.info("✅ Database connection pool initialized")
         return True
@@ -621,133 +627,141 @@ def health_check():
 @app.route('/api/ai/generate', methods=['POST'])
 def ai_generate():
     """Generate AI response using server-side Gemini keys from environment variables."""
-    data = request.get_json(silent=True) or {}
-    prompt = (data.get('prompt') or '').strip()
+    try:
+        data = request.get_json(silent=True) or {}
+        prompt = (data.get('prompt') or '').strip()
 
-    if not prompt:
-        return jsonify({'error': 'Prompt is required'}), 400
+        if not prompt:
+            return jsonify({'error': 'Prompt is required'}), 400
 
-    prompt = _shorten_prompt(prompt)
+        prompt = _shorten_prompt(prompt)
 
-    preferred_model = (data.get('preferredModel') or '').strip()
-    generation_input = data.get('generationConfig') or {}
+        preferred_model = (data.get('preferredModel') or '').strip()
+        generation_input = data.get('generationConfig') or {}
 
-    generation_config = {
-        'temperature': _clamp_float(generation_input.get('temperature'), 0.9, 0.0, 2.0),
-        'maxOutputTokens': _clamp_int(generation_input.get('maxOutputTokens'), 300, 1, 2048),
-        'topP': _clamp_float(generation_input.get('topP'), 0.95, 0.0, 1.0),
-        'topK': _clamp_int(generation_input.get('topK'), 40, 1, 100),
-    }
+        generation_config = {
+            'temperature': _clamp_float(generation_input.get('temperature'), 0.9, 0.0, 2.0),
+            'maxOutputTokens': _clamp_int(generation_input.get('maxOutputTokens'), 300, 1, 2048),
+            'topP': _clamp_float(generation_input.get('topP'), 0.95, 0.0, 1.0),
+            'topK': _clamp_int(generation_input.get('topK'), 40, 1, 100),
+        }
 
-    api_keys = get_gemini_api_keys()
-    if not api_keys:
-        logger.error("Gemini API keys are not configured in environment variables.")
-        return jsonify({'error': 'AI service is not configured on the server.'}), 500
+        api_keys = get_gemini_api_keys()
+        if not api_keys:
+            logger.error("Gemini API keys are not configured in environment variables.")
+            return jsonify({'error': 'AI service is not configured on the server.'}), 500
 
-    model_candidates = build_model_candidates(preferred_model)[:GEMINI_MODEL_FALLBACK_LIMIT]
-    last_error = "AI service request failed."
-    error_stats = {}
-    retry_waits = [0.0, 0.25, 0.6][:max(1, GEMINI_REQUEST_PASSES)]
-    started_at = time.time()
-    attempts_made = 0
-    deadline_exceeded = False
-    max_attempts_hit = False
+        model_candidates = build_model_candidates(preferred_model)[:GEMINI_MODEL_FALLBACK_LIMIT]
+        last_error = "AI service request failed."
+        error_stats = {}
+        retry_waits = [0.0, 0.25, 0.6][:max(1, GEMINI_REQUEST_PASSES)]
+        started_at = time.time()
+        attempts_made = 0
+        deadline_exceeded = False
+        max_attempts_hit = False
 
-    for pass_index, wait_seconds in enumerate(retry_waits):
-        elapsed = time.time() - started_at
-        if elapsed >= GEMINI_REQUEST_DEADLINE_SECONDS:
-            deadline_exceeded = True
-            break
-
-        if wait_seconds > 0:
-            remaining = GEMINI_REQUEST_DEADLINE_SECONDS - elapsed
-            if remaining <= 0:
+        for pass_index, wait_seconds in enumerate(retry_waits):
+            elapsed = time.time() - started_at
+            if elapsed >= GEMINI_REQUEST_DEADLINE_SECONDS:
                 deadline_exceeded = True
                 break
-            time.sleep(min(wait_seconds, remaining))
 
-        prioritized_keys = _build_prioritized_keys(api_keys)
-        stop_outer_loops = False
-        for api_key in prioritized_keys:
-            key_hit_rate_limit = False
-            for model in model_candidates:
-                if attempts_made >= GEMINI_MAX_ATTEMPTS_PER_REQUEST:
-                    max_attempts_hit = True
-                    stop_outer_loops = True
-                    break
-
-                if (time.time() - started_at) >= GEMINI_REQUEST_DEADLINE_SECONDS:
+            if wait_seconds > 0:
+                remaining = GEMINI_REQUEST_DEADLINE_SECONDS - elapsed
+                if remaining <= 0:
                     deadline_exceeded = True
-                    stop_outer_loops = True
                     break
+                time.sleep(min(wait_seconds, remaining))
 
-                attempts_made += 1
-                result = call_gemini_generate(api_key, model, prompt, generation_config)
-                if result.get('ok'):
-                    _clear_key_cooldown(api_key)
-                    return jsonify({
-                        'text': result['text'],
-                        'model': result['model'],
-                        'provider': 'gemini'
-                    })
+            prioritized_keys = _build_prioritized_keys(api_keys)[:GEMINI_MAX_KEYS_PER_REQUEST]
+            stop_outer_loops = False
+            for api_key in prioritized_keys:
+                key_hit_rate_limit = False
+                for model in model_candidates:
+                    if attempts_made >= GEMINI_MAX_ATTEMPTS_PER_REQUEST:
+                        max_attempts_hit = True
+                        stop_outer_loops = True
+                        break
 
-                last_error = result.get('error') or last_error
-                err_type = result.get('error_type') or 'unknown'
-                error_stats[err_type] = error_stats.get(err_type, 0) + 1
+                    if (time.time() - started_at) >= GEMINI_REQUEST_DEADLINE_SECONDS:
+                        deadline_exceeded = True
+                        stop_outer_loops = True
+                        break
 
-                # Auth failures are key-scoped, so skip to next key.
-                if err_type == 'auth':
+                    attempts_made += 1
+                    result = call_gemini_generate(api_key, model, prompt, generation_config)
+                    if result.get('ok'):
+                        _clear_key_cooldown(api_key)
+                        return jsonify({
+                            'text': result['text'],
+                            'model': result['model'],
+                            'provider': 'gemini'
+                        })
+
+                    last_error = result.get('error') or last_error
+                    err_type = result.get('error_type') or 'unknown'
+                    error_stats[err_type] = error_stats.get(err_type, 0) + 1
+
+                    # Auth failures are key-scoped, so skip to next key.
+                    if err_type == 'auth':
+                        _mark_key_result(api_key, err_type)
+                        break
+
+                    # Rate-limit can be model-scoped; try next model first.
+                    if err_type == 'rate_limit':
+                        key_hit_rate_limit = True
+                        continue
+
                     _mark_key_result(api_key, err_type)
+
+                # Cool down key only after trying all model fallbacks.
+                if key_hit_rate_limit:
+                    _mark_key_result(api_key, 'rate_limit')
+
+                if stop_outer_loops:
                     break
-
-                # Rate-limit can be model-scoped; try next model first.
-                if err_type == 'rate_limit':
-                    key_hit_rate_limit = True
-                    continue
-
-                _mark_key_result(api_key, err_type)
-
-            # Cool down key only after trying all model fallbacks.
-            if key_hit_rate_limit:
-                _mark_key_result(api_key, 'rate_limit')
 
             if stop_outer_loops:
                 break
 
-        if stop_outer_loops:
-            break
+            logger.warning(
+                "Gemini request pass %s/%s failed. Retrying with next key/model set.",
+                pass_index + 1,
+                len(retry_waits),
+            )
 
-        logger.warning(
-            "Gemini request pass %s/%s failed. Retrying with next key/model set.",
-            pass_index + 1,
-            len(retry_waits),
-        )
+        is_dev = os.getenv('FLASK_ENV') == 'development' or os.getenv('NODE_ENV') == 'development'
+        dominant_error_type = max(error_stats, key=error_stats.get) if error_stats else 'unknown'
 
-    is_dev = os.getenv('FLASK_ENV') == 'development' or os.getenv('NODE_ENV') == 'development'
-    dominant_error_type = max(error_stats, key=error_stats.get) if error_stats else 'unknown'
+        final_error_type = dominant_error_type
+        if is_dev:
+            safe_error = last_error
+        elif deadline_exceeded:
+            safe_error = 'AI request timeout. Please try again.'
+            final_error_type = 'timeout'
+        elif max_attempts_hit:
+            safe_error = 'AI service is busy right now. Please try again.'
+            final_error_type = 'busy'
+        elif dominant_error_type == 'rate_limit':
+            safe_error = 'AI usage limit reached. Please wait and try again shortly.'
+        elif dominant_error_type == 'auth':
+            safe_error = 'AI credentials are invalid or expired on the server.'
+        elif dominant_error_type == 'model_not_found':
+            safe_error = 'Configured AI model is unavailable. Please try again shortly.'
+        else:
+            safe_error = 'AI service request failed. Please try again.'
 
-    final_error_type = dominant_error_type
-    if is_dev:
-        safe_error = last_error
-    elif deadline_exceeded:
-        safe_error = 'AI request timeout. Please try again.'
-        final_error_type = 'timeout'
-    elif max_attempts_hit:
-        safe_error = 'AI service is busy right now. Please try again.'
-        final_error_type = 'busy'
-    elif dominant_error_type == 'rate_limit':
-        safe_error = 'AI usage limit reached. Please wait and try again shortly.'
-    elif dominant_error_type == 'auth':
-        safe_error = 'AI credentials are invalid or expired on the server.'
-    elif dominant_error_type == 'model_not_found':
-        safe_error = 'Configured AI model is unavailable. Please try again shortly.'
-    else:
-        safe_error = 'AI service request failed. Please try again.'
-
-    return jsonify({
-        'error': safe_error,
-        'errorType': final_error_type
-    }), 503
+        return jsonify({
+            'error': safe_error,
+            'errorType': final_error_type
+        }), 503
+    except Exception as e:
+        logger.exception("Unexpected /api/ai/generate failure: %s", e)
+        is_dev = os.getenv('FLASK_ENV') == 'development' or os.getenv('NODE_ENV') == 'development'
+        return jsonify({
+            'error': str(e) if is_dev else 'AI service internal failure. Please try again.',
+            'errorType': 'server'
+        }), 503
 
 # ========================================
 # AUTH ENDPOINTS
