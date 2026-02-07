@@ -273,51 +273,29 @@ function checkAuthentication() {
         }
     }
     
-    // Always update status indicator immediately (built-in key should always be available)
+    // Always update status indicator immediately
     updateStatusIndicator();
-    
-    // Check if API key is configured (including built-in key)
-    const apiKey = getActiveApiKey();
-    
-    if (!apiKey) {
-        // This should not happen since built-in key should always be available
-        console.warn('⚠️ No API key found, but built-in key should be available');
-        // Try to update status again
-        setTimeout(() => {
-            updateStatusIndicator();
-        }, 100);
-        // Start chat asynchronously without blocking
+
+    // Start chat UI (AI keys are now managed by backend .env)
+    const prechat = document.getElementById('prechat');
+    if (prechat) {
+        prechat.style.display = 'flex';
+    }
+    setTimeout(() => {
+        if (prechat) {
+            prechat.style.display = 'none';
+        }
         (async () => {
             try {
-                await startChat(); // This will show the setup prompt
+                await startChat();
+                updateStatusIndicator();
             } catch (error) {
                 console.error('❌ Error starting chat:', error);
+                const chat = document.getElementById('chat');
+                if (chat) chat.style.display = 'flex';
             }
         })();
-    } else {
-        // API key exists - show pre-chat animation, then chat
-        const prechat = document.getElementById('prechat');
-        if (prechat) {
-            prechat.style.display = 'flex';
-        }
-        setTimeout(() => {
-            if (prechat) {
-                prechat.style.display = 'none';
-            }
-            // Start chat asynchronously without blocking
-            (async () => {
-                try {
-                    await startChat();
-                    updateStatusIndicator(); // Ensure status is updated
-                } catch (error) {
-                    console.error('❌ Error starting chat:', error);
-                    // Still show chat interface even if loading conversations fails
-                    const chat = document.getElementById('chat');
-                    if (chat) chat.style.display = 'flex';
-                }
-            })();
-        }, 2000); // Reduced to 2 seconds
-    }
+    }, 1200);
 }
 
 // Custom Confirmation Modal
@@ -506,59 +484,36 @@ async function startChat() {
     const prechat = document.getElementById('prechat');
     const chat = document.getElementById('chat');
     const messages = document.getElementById('messages');
-    
-    // Check if API key is configured (including built-in key)
-    const apiKey = getActiveApiKey();
-    
-    if (apiKey) {
-        // API key exists - show chat interface
-        if (prechat) {
-            // Clear any setup prompt if it exists
-            const setupPrompt = document.getElementById('setup-prompt');
-            if (setupPrompt) setupPrompt.remove();
-            prechat.style.display = 'none';
-        }
-        if (chat) chat.style.display = 'flex';
-        
-        // ALWAYS start with a new empty chat - reset everything
-        currentConversationId = null;
-        conversationHistory = [];
-        
-        // Clear messages display
-        if (messages) {
-            messages.innerHTML = '';
-        }
-        
-        // Show welcome message when chat is empty
-        toggleWelcomeMessage();
-        
-        // Load conversations list (with error handling)
-        try {
-            await loadConversations();
-        } catch (error) {
-            console.error('❌ Error loading conversations:', error);
-            conversations = []; // Fallback to empty array
-        }
-        renderConversationsList();
-        toggleWelcomeMessage(); // Update welcome/no chat history display
-    } else {
-        // No API key - show setup prompt immediately
-        if (prechat) {
-            prechat.style.display = 'flex';
-            // Hide the default pre-chat messages
-            const prechatMessages = prechat.querySelectorAll('p');
-            prechatMessages.forEach(p => {
-                if (!p.id && !p.classList.contains('preparing-text')) {
-                    p.style.display = 'none';
-                } else if (p.classList.contains('preparing-text')) {
-                    p.style.display = 'none';
-                }
-            });
-            
-            // No setup prompt needed - keys are embedded in code
-        }
-        if (chat) chat.style.display = 'none';
+
+    // AI keys are server-managed; always show chat interface.
+    if (prechat) {
+        const setupPrompt = document.getElementById('setup-prompt');
+        if (setupPrompt) setupPrompt.remove();
+        prechat.style.display = 'none';
     }
+    if (chat) chat.style.display = 'flex';
+
+    // ALWAYS start with a new empty chat - reset everything
+    currentConversationId = null;
+    conversationHistory = [];
+
+    // Clear messages display
+    if (messages) {
+        messages.innerHTML = '';
+    }
+
+    // Show welcome message when chat is empty
+    toggleWelcomeMessage();
+
+    // Load conversations list (with error handling)
+    try {
+        await loadConversations();
+    } catch (error) {
+        console.error('❌ Error loading conversations:', error);
+        conversations = []; // Fallback to empty array
+    }
+    renderConversationsList();
+    toggleWelcomeMessage(); // Update welcome/no chat history display
     
     updateStatusIndicator();
 }
@@ -2382,213 +2337,18 @@ function setActiveApiKey(keyId) {
     updateStatusIndicator();
 }
 
-// Helper function to check available models for an API key
-async function checkAvailableModels(apiKey) {
-    try {
-        // Try v1beta first (most up-to-date)
-        const listUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`;
-        console.log('📡 Calling ListModels API...', listUrl.substring(0, 80) + '...');
-        const response = await fetch(listUrl);
-        
-        console.log('📡 ListModels response status:', response.status);
-        
-        if (response.ok) {
-            const data = await response.json();
-            console.log('📋 Available models response received, total models:', data.models?.length || 0);
-            
-            if (data.models && Array.isArray(data.models)) {
-                // Filter for Gemini models that support generateContent method
-                const supportedModels = data.models
-                    .filter(m => {
-                        const name = m.name || '';
-                        const supportedMethods = m.supportedGenerationMethods || [];
-                        const isGemini = name.includes('gemini');
-                        const supportsGenerate = supportedMethods.includes('generateContent');
-                        
-                        if (isGemini) {
-                            console.log('🔍 Model found:', name, 'supports generateContent:', supportsGenerate);
-                        }
-                        
-                        return isGemini && supportsGenerate;
-                    })
-                    .map(m => {
-                        // Extract just the model name (remove 'models/' prefix)
-                        const fullName = m.name || '';
-                        const cleanName = fullName.replace(/^models\//, '');
-                        return cleanName;
-                    });
-                
-                if (supportedModels.length > 0) {
-                    console.log('✅ Found', supportedModels.length, 'Gemini models with generateContent support:', supportedModels);
-                } else {
-                    console.warn('⚠️ No Gemini models with generateContent support found in response');
-                }
-                
-                return supportedModels;
-            } else {
-                console.warn('⚠️ Invalid response structure - no models array found');
-                console.warn('📋 Response data:', data);
-            }
-        } else {
-            let errorText = '';
-            let errorData = null;
-            try {
-                errorData = await response.json();
-                errorText = JSON.stringify(errorData);
-                console.warn('⚠️ ListModels API failed:', response.status, errorData);
-                
-                // Check for specific authentication errors
-                if (response.status === 401 || response.status === 403) {
-                    const errorMsg = errorData.error?.message || '';
-                    if (errorMsg.includes('API key') || errorMsg.includes('invalid') || errorMsg.includes('expired')) {
-                        console.error('❌ API KEY EXPIRED OR INVALID:', errorMsg);
-                        // Store this info to show user later
-                        window._apiKeyInvalid = true;
-                        window._apiKeyError = errorMsg;
-                    }
-                }
-            } catch (e) {
-                errorText = await response.text();
-                console.warn('⚠️ ListModels API failed:', response.status, errorText);
-                if (response.status === 401 || response.status === 403) {
-                    window._apiKeyInvalid = true;
-                    window._apiKeyError = 'API key authentication failed';
-                }
-            }
-        }
-    } catch (e) {
-        console.error('❌ Error calling ListModels API:', e);
-        console.error('❌ Error details:', e.message, e.stack);
-    }
-    return null;
-}
-
-async function testApiKey(key) {
-    try {
-        // First, try to check what models are available
-        await checkAvailableModels(key);
-        
-        // Try v1beta with gemini-1.5-flash (most common for free tier)
-        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${key}`;
-        const response = await fetch(apiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                contents: [{ parts: [{ text: 'test' }] }],
-                generationConfig: { maxOutputTokens: 10 }
-            })
-        });
-        
-        if (response.ok) {
-            return true;
-        }
-        
-        // If first attempt failed, try gemini-pro with v1beta
-        const apiUrl2 = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${key}`;
-        const response2 = await fetch(apiUrl2, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                contents: [{ parts: [{ text: 'test' }] }],
-                generationConfig: { maxOutputTokens: 10 }
-            })
-        });
-        
-        return response2.ok;
-    } catch (e) {
-        console.error('Test API key error:', e);
-        return false;
-    }
-}
-
 async function addApiKey() {
     const keyInput = document.getElementById('gemini-key');
-    const key = keyInput ? keyInput.value.trim() : '';
-    
-    if (!key || !key.startsWith('AIza')) {
-        showToast({
-            type: 'warning',
-            title: 'Invalid API Key',
-            message: 'Please enter a valid Gemini API key (starts with "AIza...")',
-            duration: 5000
-        });
-        return;
-    }
-    
-    const keys = getUserApiKeys();
-    
-    // Check if key already exists
-    if (keys.find(k => k.key === key)) {
-        showToast({
-            type: 'warning',
-            title: 'Key Already Exists',
-            message: 'This API key is already added!',
-            duration: 4000
-        });
+    if (keyInput) {
         keyInput.value = '';
-        return;
     }
-    
-    // Show testing message
-    const loadingMsg = document.createElement('div');
-    loadingMsg.textContent = '🔄 Testing API key...';
-    loadingMsg.style.cssText = 'padding: 10px; text-align: center; color: var(--text-secondary);';
-    const keysList = document.getElementById('api-keys-list');
-    if (keysList) {
-        keysList.appendChild(loadingMsg);
-    }
-    
-    // Test the key
-    const isValid = await testApiKey(key);
-    
-    // Remove loading message
-    if (loadingMsg.parentNode) {
-        loadingMsg.parentNode.removeChild(loadingMsg);
-    }
-    
-    if (!isValid) {
-        showToast({
-            type: 'error',
-            title: 'API Key Test Failed',
-            message: 'Please check your key and try again.',
-            duration: 5000
-        });
-        return;
-    }
-    
-    // Add new key
-    const newKey = {
-        id: Date.now().toString(),
-        key: key,
-        addedAt: new Date().toISOString(),
-        active: true, // Auto-activate new keys
-        status: 'working'
-    };
-    
-    // Deactivate all other keys
-    keys.forEach(k => k.active = false);
-    
-    // Add new key at the beginning (most recent first)
-    keys.unshift(newKey);
-    saveUserApiKeys(keys);
-    
-    // Clear input
-    keyInput.value = '';
-    
-    // Refresh list and update status
-    refreshApiKeysList();
-    updateStatusIndicator();
-    
-    // Also save to legacy location for backward compatibility
-    localStorage.setItem('gemini_api_key', key);
-    
+
     showToast({
-        type: 'success',
-        title: 'API Key Added',
-        message: 'API key added and activated! This key is now available to ALL users. The system will automatically use this key and rotate to others if needed.',
-        duration: 6000
+        type: 'info',
+        title: 'Backend Key Mode',
+        message: 'Browser API key input is disabled. Configure Gemini keys only in backend .env variables.',
+        duration: 5500
     });
-    console.log('✅ New API key added (global, shared):', key.substring(0, 10) + '...');
 }
 
 function removeApiKey(keyId) {
@@ -2652,7 +2412,7 @@ function refreshApiKeysList() {
     
     // Show simplified status (keys are hidden from users)
     if (keys.length === 0) {
-        keysList.innerHTML = '<p style="margin: 0; font-size: 12px; color: var(--error-color);">⚠️ No API keys configured. Please add keys to PRE_CONFIGURED_API_KEYS array in script.js</p>';
+        keysList.innerHTML = '<p style="margin: 0; font-size: 12px; color: var(--success-color);">✅ Server-managed AI keys enabled (.env on backend). No browser key setup required.</p>';
         return;
     }
     
@@ -2669,7 +2429,7 @@ function refreshApiKeysList() {
                 • ${embeddedKeys.length} embedded key${embeddedKeys.length !== 1 ? 's' : ''} from code<br>
                 • ${activeKeys.length} active/working key${activeKeys.length !== 1 ? 's' : ''}<br>
                 &bull; ${cooldownKeys.length} key${cooldownKeys.length !== 1 ? 's' : ''} in cooldown<br>
-                • Automatic failover enabled - system will switch keys if one fails
+                • Automatic failover enabled (legacy browser-key mode)
             </p>
         </div>
     `;
@@ -2719,98 +2479,66 @@ function saveApiKey() {
         console.log('✅ Settings saved');
         console.log('📊 Selected model:', model);
         
-        // Check if there are existing keys
-        const keys = getUserApiKeys();
-        if (keys.length > 0) {
-            // Keys exist, just save settings
-            return;
-        }
-        
-        // No keys and no new key provided
+        // In backend-proxy mode, no browser key is required.
         showToast({
-            type: 'warning',
-            title: 'API Key Required',
-            message: 'Please add at least one API key to enable AI responses. Get your FREE key at: https://makersuite.google.com/app/apikey',
-            duration: 7000
+            type: 'info',
+            title: 'Server Keys Active',
+            message: 'AI keys are managed securely on the backend environment.',
+            duration: 4500
         });
     }
+}
+
+async function callBackendAIGenerate(prompt, generationConfig = {}, options = {}) {
+    const preferredModel = localStorage.getItem('gemini_model') || 'gemini-1.5-flash';
+    const payload = {
+        prompt: prompt,
+        preferredModel: preferredModel,
+        generationConfig: {
+            temperature: generationConfig.temperature ?? 0.9,
+            maxOutputTokens: generationConfig.maxOutputTokens ?? 300,
+            topP: generationConfig.topP ?? 0.95,
+            topK: generationConfig.topK ?? 40
+        }
+    };
+
+    const response = await apiRequest('/api/ai/generate', {
+        method: 'POST',
+        skipAuth: true,
+        body: JSON.stringify(payload),
+        signal: options.signal
+    });
+
+    const text = response?.text?.trim?.();
+    if (!text) {
+        throw new Error('Invalid AI response from backend');
+    }
+    return text;
 }
 
 // Generate conversation title from first user message
 async function generateConversationTitle(firstMessage) {
     try {
-        const apiKey = getActiveApiKey();
-        if (!apiKey) {
-            console.warn('⚠️ No API key available for title generation');
-            return null;
-        }
-        
-        // Create a simple prompt to generate a concise title
         const titlePrompt = `Based on this message, generate a short, concise conversation title (maximum 6 words, no quotes or punctuation at the end). Just return the title text only:\n\n"${firstMessage}"`;
-        
-        // Try to use the same model configs as generateAIResponse
-        const modelConfigs = [
-            { model: 'gemini-1.5-flash', apiVersion: 'v1beta' },
-            { model: 'gemini-1.5-pro', apiVersion: 'v1beta' },
-            { model: 'gemini-pro', apiVersion: 'v1beta' },
-        ];
-        
-        let lastError = null;
-        for (const config of modelConfigs) {
-            try {
-                const apiUrl = `https://generativelanguage.googleapis.com/${config.apiVersion}/models/${config.model}:generateContent?key=${apiKey}`;
-                
-                const response = await fetch(apiUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        contents: [{ parts: [{ text: titlePrompt }] }],
-                        generationConfig: {
-                            maxOutputTokens: 20, // Keep it short for titles
-                            temperature: 0.7,
-                        }
-                    })
-                });
-                
-                if (!response.ok) {
-                    const errorData = await response.json().catch(() => ({ error: { message: response.statusText } }));
-                    throw new Error(errorData.error?.message || `HTTP ${response.status}`);
-                }
-                
-                const data = await response.json();
-                const title = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-                
-                if (title) {
-                    // Clean up the title - remove quotes, extra punctuation, and limit length
-                    let cleanTitle = title.replace(/^["']|["']$/g, '').replace(/\.$/, '').trim();
-                    // Limit to 50 characters max
-                    if (cleanTitle.length > 50) {
-                        cleanTitle = cleanTitle.substring(0, 47) + '...';
-                    }
-                    console.log('✅ Generated conversation title:', cleanTitle);
-                    return cleanTitle || null;
-                }
-                
-                throw new Error('No title generated in response');
-            } catch (error) {
-                lastError = error;
-                console.warn(`⚠️ Title generation failed with ${config.model}:`, error.message);
-                continue; // Try next model
-            }
+        const title = await callBackendAIGenerate(titlePrompt, {
+            maxOutputTokens: 20,
+            temperature: 0.7,
+            topP: 0.95,
+            topK: 40
+        });
+
+        let cleanTitle = title.replace(/^["']|["']$/g, '').replace(/\.$/, '').trim();
+        if (cleanTitle.length > 50) {
+            cleanTitle = cleanTitle.substring(0, 47) + '...';
         }
-        
-        // All models failed
-        if (lastError) {
-            console.error('❌ All models failed for title generation:', lastError);
-        }
-        return null;
+        return cleanTitle || null;
     } catch (error) {
-        console.error('❌ Error generating conversation title:', error);
+        console.warn('⚠️ Title generation failed:', error.message);
         return null;
     }
 }
 
-// AI Response Generation - Always uses Gemini Free Tier
+// AI Response Generation - uses backend proxy (server-managed keys from .env)
 async function generateAIResponse(combinedMessage, originalMessages = null) {
     // Add all user messages to conversation history
     // If we have the original array of messages, add them individually
@@ -2844,263 +2572,30 @@ Your role is to be a reliable emotional support companion that helps users feel 
 
 ${INSTRUCTIONS}`;
     
-    const keyCandidates = buildCandidateApiKeys();
-    if (keyCandidates.length === 0) {
-        throw new Error('No API key configured. Please configure at least one Gemini API key.');
-    }
-    
-    let lastError = null;
-    for (const candidate of keyCandidates) {
-        try {
-            console.log('Trying API key source:', candidate.source);
-            const response = await tryGenerateWithKey(candidate.key, combinedMessage, systemPrompt, originalMessages);
-            
-            if (!candidate.isBuiltIn) {
-                markApiKeyWorking(candidate.key);
-                localStorage.setItem('gemini_api_key', candidate.key);
-            }
-            
-            return response;
-        } catch (error) {
-            const failureType = classifyGeminiFailure(error);
-            if (failureType === 'aborted') {
-                throw error;
-            }
-            
-            lastError = error;
-            if (!candidate.isBuiltIn) {
-                applyKeyFailurePolicy(candidate.key, error);
-            }
-            
-            console.warn('API key failed, trying next key:', failureType, error.message);
-        }
-    }
-    
-    throw lastError || new Error('All configured Gemini API keys failed.');
-}
-
-async function tryGenerateWithKey(apiKey, combinedMessage, systemPrompt, originalMessages = null) {
-    
-    // Get model from localStorage and map to correct Gemini API model names
-    let savedModel = localStorage.getItem('gemini_model') || 'gemini-pro';
-    
-    // Try multiple model name formats and API versions until one works
-    // Based on official Gemini API documentation and free tier availability
-    // Note: v1 API is deprecated - only use v1beta
-    // Order matters: Most common/free tier models first
-    const modelConfigs = [
-        // Most common free tier models first (these are most likely to work)
-        { model: 'gemini-1.5-flash', apiVersion: 'v1beta' },
-        { model: 'gemini-1.5-pro', apiVersion: 'v1beta' },
-        // Try newer experimental models
-        { model: 'gemini-2.0-flash-exp', apiVersion: 'v1beta' },
-        // Try with version numbers (specific versions)
-        { model: 'gemini-1.5-flash-002', apiVersion: 'v1beta' },
-        { model: 'gemini-1.5-pro-002', apiVersion: 'v1beta' },
-        { model: 'gemini-1.5-flash-001', apiVersion: 'v1beta' },
-        { model: 'gemini-1.5-pro-001', apiVersion: 'v1beta' },
-        // Try "latest" suffix versions
-        { model: 'gemini-1.5-flash-latest', apiVersion: 'v1beta' },
-        { model: 'gemini-1.5-pro-latest', apiVersion: 'v1beta' },
-    ];
-    
-    console.log('🚀 Calling AI API...');
-    console.log('💬 User message(s):', originalMessages ? originalMessages.join(' | ') : combinedMessage);
-    console.log('🔑 API Key:', apiKey ? apiKey.substring(0, 10) + '...' : 'MISSING');
-    
     const context = conversationHistory.slice(-10).map(m => 
         m.role === 'user' ? `User: ${m.content}` : `Assistant: ${m.content}`
     ).join('\n');
-    
-    // Use combinedMessage for the prompt (contains all batched messages)
+
     const prompt = `${systemPrompt}\n\nConversation history:\n${context}\n\nUser: ${combinedMessage}\nAssistant:`;
-    
-    // First, try to check what models are available (only once per session or per key change)
-    const cacheKey = `models_checked_${apiKey.substring(0, 10)}`;
-    if (!window[cacheKey]) {
-        window[cacheKey] = true;
-        console.log('🔍 Checking available models for this API key...');
-        try {
-            const availableModels = await checkAvailableModels(apiKey);
-            if (availableModels && availableModels.length > 0) {
-                console.log('✅ Found', availableModels.length, 'available models:', availableModels);
-                // Prepend available models to the configs list (try them first)
-                // These are guaranteed to support generateContent, so prioritize them
-                const availableConfigs = availableModels.map(modelName => {
-                    // Model name should already be clean from checkAvailableModels
-                    return { model: modelName, apiVersion: 'v1beta' };
-                });
-                // Remove duplicates and prepend - prioritize ListModels results
-                const existingModels = new Set(modelConfigs.map(c => c.model));
-                const newConfigs = availableConfigs.filter(c => !existingModels.has(c.model));
-                if (newConfigs.length > 0) {
-                    modelConfigs.unshift(...newConfigs);
-                    console.log('🚀 Prioritizing', newConfigs.length, 'models from ListModels API:', newConfigs.map(c => c.model));
-                } else {
-                    console.log('ℹ️ All available models already in default list');
-                }
-            } else {
-                console.warn('⚠️ Could not determine available models from ListModels - will try default list');
-                console.warn('⚠️ This might mean the ListModels API failed or returned no results');
-            }
-        } catch (error) {
-            console.error('❌ Error checking available models:', error);
-            console.warn('⚠️ Will proceed with default model list');
-        }
-    } else {
-        console.log('ℹ️ Using cached model list for this API key');
-    }
-    
-    // Create AbortController for cancellation support
+
     abortController = new AbortController();
-    const signal = abortController.signal;
-    
-    // Try each model config until one works
-    let lastError = null;
-    for (const config of modelConfigs) {
-        // Check if request was aborted
-        if (signal.aborted) {
+    try {
+        const aiResponse = await callBackendAIGenerate(prompt, {
+            temperature: 0.9,
+            maxOutputTokens: 300,
+            topP: 0.95,
+            topK: 40
+        }, {
+            signal: abortController.signal
+        });
+
+        conversationHistory.push({ role: "assistant", content: aiResponse });
+        return aiResponse;
+    } catch (error) {
+        if (error.name === 'AbortError' || (abortController && abortController.signal.aborted)) {
             throw new Error('Request cancelled by user');
         }
-        
-        const { model, apiVersion } = config;
-        const apiUrl = `https://generativelanguage.googleapis.com/${apiVersion}/models/${model}:generateContent?key=${apiKey}`;
-        
-        console.log(`🔄 Trying: ${apiVersion}/models/${model}`);
-        
-        const startTime = Date.now();
-        try {
-            const response = await fetch(apiUrl, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    contents: [{ parts: [{ text: prompt }] }],
-                    generationConfig: {
-                        temperature: 0.9,
-                        maxOutputTokens: 300,
-                        topP: 0.95,
-                        topK: 40
-                    }
-                }),
-                signal: signal // Add abort signal
-            });
-            
-            const responseTime = Date.now() - startTime;
-            
-            if (response.ok) {
-                console.log(`✅ Success with ${apiVersion}/models/${model} in ${responseTime}ms`);
-                const data = await response.json();
-                
-                // Check if response has candidates
-                if (!data.candidates || !data.candidates[0] || !data.candidates[0].content || !data.candidates[0].content.parts || !data.candidates[0].content.parts[0]) {
-                    console.error('❌ Invalid API response structure:', data);
-                    throw new Error('Invalid API response structure');
-                }
-                
-                const aiResponse = data.candidates[0].content.parts[0].text.trim();
-                conversationHistory.push({ role: "assistant", content: aiResponse });
-                
-                console.log('✅ AI Response received in', responseTime + 'ms');
-                console.log('💭 Response:', aiResponse.substring(0, 100) + '...');
-                
-                return aiResponse;
-            } else {
-                let errorMessage = '';
-                let errorDetails = '';
-                
-                try {
-                    const errorData = await response.json();
-                    errorMessage = errorData.error?.message || '';
-                    errorDetails = JSON.stringify(errorData);
-                } catch (parseError) {
-                    errorDetails = await response.text();
-                    errorMessage = errorDetails || response.statusText || '';
-                }
-                
-                const normalizedError = `${errorMessage} ${errorDetails}`.toLowerCase();
-                console.warn(`Model call failed: ${apiVersion}/models/${model} (${response.status})`, errorDetails || errorMessage);
-                
-                if (response.status === 404 && normalizedError.includes('not found')) {
-                    lastError = createGeminiError(
-                        `Model ${model} not found for API version ${apiVersion}`,
-                        { statusCode: 404, errorType: 'model_not_found', retryable: true }
-                    );
-                    continue;
-                }
-                
-                if (
-                    response.status === 401 ||
-                    response.status === 403 ||
-                    normalizedError.includes('api key not valid') ||
-                    normalizedError.includes('invalid api key')
-                ) {
-                    window._apiKeyInvalid = true;
-                    window._apiKeyError = errorMessage || 'API key is invalid or expired';
-                    throw createGeminiError(
-                        `API key authentication failed: ${errorMessage || 'API key is invalid or expired'}`,
-                        { statusCode: response.status, errorType: 'auth', retryable: false }
-                    );
-                }
-                
-                if (
-                    response.status === 429 ||
-                    normalizedError.includes('quota') ||
-                    normalizedError.includes('rate limit') ||
-                    normalizedError.includes('resource exhausted')
-                ) {
-                    throw createGeminiError(
-                        `API quota/rate limit reached: ${errorMessage || errorDetails || 'Rate limited'}`,
-                        { statusCode: 429, errorType: 'rate_limit', retryable: true }
-                    );
-                }
-                
-                lastError = createGeminiError(
-                    `AI API error: ${response.status} - ${errorMessage || errorDetails || response.statusText}`,
-                    { statusCode: response.status, errorType: 'api', retryable: true }
-                );
-                continue; // Try next model config
-            }
-        } catch (fetchError) {
-            if (fetchError && fetchError.errorType) {
-                throw fetchError;
-            }
-            
-            // Check if request was aborted by user
-            if (fetchError.name === 'AbortError' || signal.aborted) {
-                console.log('Request aborted by user');
-                throw createGeminiError('Request cancelled by user', { errorType: 'aborted', retryable: false });
-            }
-            
-            console.warn(`Fetch error for ${apiVersion}/models/${model}:`, fetchError.message);
-            console.warn(`Fetch error details:`, fetchError);
-            // Preserve the most informative error (prefer API errors over fetch errors)
-            if (!lastError || (lastError.message && lastError.message.includes(`All API model configurations failed`))) {
-                lastError = createGeminiError(fetchError.message || `Network error`, { errorType: `network`, retryable: true });
-            }
-            continue; // Try next model config
-        }
-    }
-    
-    // All model configs failed - provide detailed error
-    console.error('❌ All model configurations failed');
-    console.error('❌ Tried', modelConfigs.length, 'different model configurations');
-    console.error('❌ Last error:', lastError);
-    
-    // Create a more helpful error message
-    const errorMsg = lastError ? lastError.message : 'Unknown error';
-    
-    if (errorMsg.includes('404') || errorMsg.includes('not found')) {
-        throw createGeminiError(
-            'All API model configurations failed - None of the tried models are available for this API key. Please check your API key has access to Gemini models, or try a different API key.',
-            { statusCode: 404, errorType: 'model_not_found', retryable: true }
-        );
-    } else {
-        throw lastError || createGeminiError(
-            'All API model configurations failed. Please check your API key and internet connection.',
-            { errorType: 'unknown', retryable: true }
-        );
+        throw error;
     }
 }
 
@@ -3153,4 +2648,5 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
 });
+
 

@@ -9,6 +9,9 @@ import psycopg2
 from psycopg2.pool import SimpleConnectionPool
 from psycopg2.extras import RealDictCursor
 import os
+import json
+import urllib.request
+import urllib.error
 from dotenv import load_dotenv
 import jwt
 import bcrypt
@@ -55,6 +58,171 @@ PORT = int(os.getenv('PORT', 3000))
 
 # Database connection pool
 db_pool = None
+
+GEMINI_DEFAULT_MODELS = [
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+    "gemini-2.0-flash-exp",
+    "gemini-1.5-flash-002",
+    "gemini-1.5-pro-002",
+    "gemini-1.5-flash-001",
+    "gemini-1.5-pro-001",
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-pro-latest",
+]
+
+
+def _clamp_float(value, default, minimum, maximum):
+    """Parse float with hard bounds."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, parsed))
+
+
+def _clamp_int(value, default, minimum, maximum):
+    """Parse int with hard bounds."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, parsed))
+
+
+def get_gemini_api_keys():
+    """
+    Load Gemini keys from environment only.
+    Supports:
+    - GEMINI_API_KEYS=key1,key2,key3
+    - GEMINI_API_KEY_1..GEMINI_API_KEY_20
+    - fallback: GOOGLE_API_KEY, GEMINI_API_KEY
+    """
+    raw_keys = []
+
+    csv_keys = os.getenv("GEMINI_API_KEYS", "")
+    if csv_keys:
+        raw_keys.extend([k.strip() for k in csv_keys.split(",") if k.strip()])
+
+    for i in range(1, 21):
+        key = os.getenv(f"GEMINI_API_KEY_{i}", "").strip()
+        if key:
+            raw_keys.append(key)
+
+    for fallback_var in ("GOOGLE_API_KEY", "GEMINI_API_KEY"):
+        key = os.getenv(fallback_var, "").strip()
+        if key:
+            raw_keys.append(key)
+
+    # Dedupe while preserving order
+    deduped = []
+    seen = set()
+    for key in raw_keys:
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(key)
+
+    return deduped
+
+
+def build_model_candidates(preferred_model):
+    """Build ordered model list with optional preferred model first."""
+    candidates = []
+    preferred = (preferred_model or "").strip()
+
+    if preferred:
+        candidates.append(preferred)
+
+    for model in GEMINI_DEFAULT_MODELS:
+        if model not in candidates:
+            candidates.append(model)
+
+    return candidates
+
+
+def call_gemini_generate(api_key, model, prompt, generation_config):
+    """Call Gemini GenerateContent API for one key+model."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": generation_config,
+    }
+    encoded_payload = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url=url,
+        data=encoded_payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            raw = response.read().decode("utf-8")
+            data = json.loads(raw)
+            text = (
+                data.get("candidates", [{}])[0]
+                .get("content", {})
+                .get("parts", [{}])[0]
+                .get("text", "")
+                .strip()
+            )
+            if not text:
+                return {
+                    "ok": False,
+                    "status": 502,
+                    "error_type": "api",
+                    "error": "Gemini response did not include text output.",
+                }
+            return {"ok": True, "model": model, "text": text}
+    except urllib.error.HTTPError as http_err:
+        body = http_err.read().decode("utf-8", errors="ignore")
+        message = body or str(http_err)
+
+        try:
+            err_json = json.loads(body) if body else {}
+            message = err_json.get("error", {}).get("message", message)
+            details = json.dumps(err_json).lower()
+        except Exception:
+            details = message.lower()
+
+        status = int(http_err.code)
+        lowered = message.lower()
+
+        if (
+            status in (401, 403)
+            or "api key expired" in lowered
+            or "api_key_invalid" in details
+            or "api key not valid" in lowered
+        ):
+            err_type = "auth"
+        elif status == 429 or "quota" in lowered or "rate limit" in lowered or "resource exhausted" in lowered:
+            err_type = "rate_limit"
+        elif status == 404 and "not found" in lowered:
+            err_type = "model_not_found"
+        else:
+            err_type = "api"
+
+        return {
+            "ok": False,
+            "status": status,
+            "error_type": err_type,
+            "error": message,
+        }
+    except urllib.error.URLError as url_err:
+        return {
+            "ok": False,
+            "status": 503,
+            "error_type": "network",
+            "error": str(getattr(url_err, "reason", url_err)),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "status": 500,
+            "error_type": "unknown",
+            "error": str(exc),
+        }
 
 def init_db_pool():
     """Initialize database connection pool"""
@@ -230,6 +398,61 @@ def health_check():
             'status': 'error',
             'message': str(e)
         }), 500
+
+# ========================================
+# AI ENDPOINTS (Backend Proxy for Gemini)
+# ========================================
+
+@app.route('/api/ai/generate', methods=['POST'])
+def ai_generate():
+    """Generate AI response using server-side Gemini keys from environment variables."""
+    data = request.get_json(silent=True) or {}
+    prompt = (data.get('prompt') or '').strip()
+
+    if not prompt:
+        return jsonify({'error': 'Prompt is required'}), 400
+
+    preferred_model = (data.get('preferredModel') or '').strip()
+    generation_input = data.get('generationConfig') or {}
+
+    generation_config = {
+        'temperature': _clamp_float(generation_input.get('temperature'), 0.9, 0.0, 2.0),
+        'maxOutputTokens': _clamp_int(generation_input.get('maxOutputTokens'), 300, 1, 2048),
+        'topP': _clamp_float(generation_input.get('topP'), 0.95, 0.0, 1.0),
+        'topK': _clamp_int(generation_input.get('topK'), 40, 1, 100),
+    }
+
+    api_keys = get_gemini_api_keys()
+    if not api_keys:
+        logger.error("Gemini API keys are not configured in environment variables.")
+        return jsonify({'error': 'AI service is not configured on the server.'}), 500
+
+    model_candidates = build_model_candidates(preferred_model)
+    last_error = "AI service request failed."
+
+    for api_key in api_keys:
+        for model in model_candidates:
+            result = call_gemini_generate(api_key, model, prompt, generation_config)
+            if result.get('ok'):
+                return jsonify({
+                    'text': result['text'],
+                    'model': result['model'],
+                    'provider': 'gemini'
+                })
+
+            last_error = result.get('error') or last_error
+            err_type = result.get('error_type')
+
+            # These failures are key-scoped, so skip to the next key.
+            if err_type in ('auth', 'rate_limit'):
+                break
+
+            # model_not_found and generic errors continue trying next model.
+            continue
+
+    is_dev = os.getenv('FLASK_ENV') == 'development' or os.getenv('NODE_ENV') == 'development'
+    safe_error = last_error if is_dev else 'AI service request failed. Please try again.'
+    return jsonify({'error': safe_error}), 503
 
 # ========================================
 # AUTH ENDPOINTS
@@ -846,7 +1069,7 @@ if __name__ == '__main__':
     logger.info(f"🌐 Frontend available at http://localhost:{PORT}/")
     
     # Enable debug mode and auto-reload for development
-    debug_mode = os.getenv('FLASK_ENV') == 'development' or os.getenv('NODE_ENV') == 'development' or True
+    debug_mode = os.getenv('FLASK_ENV') == 'development' or os.getenv('NODE_ENV') == 'development'
     app.run(host='0.0.0.0', port=PORT, debug=debug_mode, use_reloader=True, use_debugger=debug_mode)
 
 
