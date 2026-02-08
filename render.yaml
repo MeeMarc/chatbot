@@ -12,5 +12,21 @@ services:
         generateValue: true
       - key: GEMINI_API_KEYS
         sync: false
+      - key: LOW_QUOTA_MODE
+        value: "1"
+      - key: GEMINI_REQUEST_PASSES
+        value: "1"
+      - key: GEMINI_MAX_KEYS_PER_REQUEST
+        value: "1"
+      - key: GEMINI_MODEL_FALLBACK_LIMIT
+        value: "1"
+      - key: GEMINI_MAX_ATTEMPTS_PER_REQUEST
+        value: "1"
+      - key: GEMINI_MAX_OUTPUT_TOKENS
+        value: "220"
+      - key: GEMINI_DEFAULT_OUTPUT_TOKENS
+        value: "180"
+      - key: GEMINI_MAX_PROMPT_CHARS
+        value: "3000"
       - key: PYTHON_VERSION
         value: 3.12.7

@@ -12,8 +12,11 @@ let abortController = null; // For canceling AI requests
 const BATCH_DELAY = 500; // Wait 500ms after last message before responding (allows multiple rapid messages to batch together)
 const AI_BACKEND_REQUEST_TIMEOUT_MS = 7000;
 const LOW_QUOTA_MODE = true;
-const MAX_CONTEXT_TURNS = LOW_QUOTA_MODE ? 6 : 10;
+const MAX_CONTEXT_TURNS = LOW_QUOTA_MODE ? 4 : 10;
 const AI_STRICT_CORRECTION_PASSES = LOW_QUOTA_MODE ? 0 : 2;
+const AI_RESPONSE_CACHE_TTL_MS = LOW_QUOTA_MODE ? 90000 : 30000;
+const AI_RESPONSE_CACHE_MAX_ENTRIES = LOW_QUOTA_MODE ? 40 : 20;
+const aiResponseCache = new Map();
 const LEGACY_BROWSER_KEY_STORAGE_KEYS = [
     'gemini_api_keys_global',
     'gemini_api_key',
@@ -1995,6 +1998,49 @@ function shouldRetryAIRequest(error) {
     );
 }
 
+function cleanupAIResponseCache(now = Date.now()) {
+    for (const [key, entry] of aiResponseCache.entries()) {
+        if (!entry || now >= entry.expiresAt) {
+            aiResponseCache.delete(key);
+        }
+    }
+
+    while (aiResponseCache.size > AI_RESPONSE_CACHE_MAX_ENTRIES) {
+        const oldestKey = aiResponseCache.keys().next().value;
+        if (!oldestKey) break;
+        aiResponseCache.delete(oldestKey);
+    }
+}
+
+function buildAIResponseCacheKey(payload) {
+    const keyPayload = {
+        prompt: String(payload?.prompt || '').trim(),
+        preferredModel: String(payload?.preferredModel || '').trim(),
+        generationConfig: payload?.generationConfig || {}
+    };
+    return JSON.stringify(keyPayload);
+}
+
+function getCachedAIResponse(cacheKey) {
+    const now = Date.now();
+    cleanupAIResponseCache(now);
+    const cached = aiResponseCache.get(cacheKey);
+    if (!cached || now >= cached.expiresAt) {
+        aiResponseCache.delete(cacheKey);
+        return null;
+    }
+    return cached.text || null;
+}
+
+function setCachedAIResponse(cacheKey, text) {
+    const now = Date.now();
+    aiResponseCache.set(cacheKey, {
+        text,
+        expiresAt: now + AI_RESPONSE_CACHE_TTL_MS
+    });
+    cleanupAIResponseCache(now);
+}
+
 function detectLanguageHint(rawText, persistPreference = true) {
     const message = String(rawText || '').toLowerCase();
 
@@ -2216,8 +2262,8 @@ function getResponseGenerationConfig(constraint) {
     if (constraint?.count) {
         const unitMultiplier = constraint.unit === 'sentences' ? 70 : 40;
         const maxOutputTokens = Math.max(
-            LOW_QUOTA_MODE ? 220 : 700,
-            Math.min(LOW_QUOTA_MODE ? 650 : 2400, constraint.count * unitMultiplier)
+            LOW_QUOTA_MODE ? 180 : 700,
+            Math.min(LOW_QUOTA_MODE ? 220 : 2400, constraint.count * unitMultiplier)
         );
         return {
             temperature: 0.45,
@@ -2229,7 +2275,7 @@ function getResponseGenerationConfig(constraint) {
     if (constraint?.asksForConcreteLanguageItems) {
         return {
             temperature: 0.5,
-            maxOutputTokens: LOW_QUOTA_MODE ? 320 : 900,
+            maxOutputTokens: LOW_QUOTA_MODE ? 220 : 900,
             topP: 0.9,
             topK: 32
         };
@@ -2237,7 +2283,7 @@ function getResponseGenerationConfig(constraint) {
 
     return {
         temperature: 0.75,
-        maxOutputTokens: LOW_QUOTA_MODE ? 220 : 300,
+        maxOutputTokens: LOW_QUOTA_MODE ? 180 : 300,
         topP: 0.95,
         topK: 40
     };
@@ -2250,11 +2296,18 @@ async function callBackendAIGenerate(prompt, generationConfig = {}, options = {}
         preferredModel: preferredModel,
         generationConfig: {
             temperature: generationConfig.temperature ?? 0.9,
-            maxOutputTokens: generationConfig.maxOutputTokens ?? (LOW_QUOTA_MODE ? 220 : 300),
+            maxOutputTokens: generationConfig.maxOutputTokens ?? (LOW_QUOTA_MODE ? 180 : 300),
             topP: generationConfig.topP ?? 0.95,
             topK: generationConfig.topK ?? 40
         }
     };
+    const cacheKey = buildAIResponseCacheKey(payload);
+    if (!options.signal?.aborted) {
+        const cachedText = getCachedAIResponse(cacheKey);
+        if (cachedText) {
+            return cachedText;
+        }
+    }
 
     const retryDelays = [0];
     let lastError = null;
@@ -2280,6 +2333,7 @@ async function callBackendAIGenerate(prompt, generationConfig = {}, options = {}
             if (!text) {
                 throw new Error('Invalid AI response from backend');
             }
+            setCachedAIResponse(cacheKey, text);
             return text;
         } catch (error) {
             if (error.name === 'AbortError') {
