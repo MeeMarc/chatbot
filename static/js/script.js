@@ -315,8 +315,8 @@ function checkAuthentication() {
     const logoutBtn = document.getElementById('logout-btn');
     if (logoutBtn) {
         if (user.isGuest) {
-            logoutBtn.innerHTML = '🔐 Log in';
-            logoutBtn.classList.add('guest-login');
+            logoutBtn.innerHTML = '🚪 Logout';
+            logoutBtn.classList.remove('guest-login');
         } else {
             logoutBtn.innerHTML = '🚪 Logout';
             logoutBtn.classList.remove('guest-login');
