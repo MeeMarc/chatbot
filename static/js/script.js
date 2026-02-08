@@ -1995,20 +1995,20 @@ function shouldRetryAIRequest(error) {
     );
 }
 
-function detectFallbackLanguage(text) {
-    const message = String(text || '').toLowerCase();
+function detectLanguageHint(rawText, persistPreference = true) {
+    const message = String(rawText || '').toLowerCase();
 
     // Explicit preference in the user's latest message overrides everything.
     if (/\b(ilokano|ilocano|iloco)\b/.test(message)) {
-        setStoredLanguagePreference('ilokano');
+        if (persistPreference) setStoredLanguagePreference('ilokano');
         return 'ilokano';
     }
     if (/\b(filipino|tagalog)\b/.test(message)) {
-        setStoredLanguagePreference('filipino');
+        if (persistPreference) setStoredLanguagePreference('filipino');
         return 'filipino';
     }
     if (/\b(english)\b/.test(message)) {
-        setStoredLanguagePreference('english');
+        if (persistPreference) setStoredLanguagePreference('english');
         return 'english';
     }
 
@@ -2027,16 +2027,44 @@ function detectFallbackLanguage(text) {
 
     // Lightweight lexical hints.
     if (/\b(adda|haan|wen|anya|kasta|agyaman|manong|manang|kabsat|sika)\b/.test(message)) {
-        setStoredLanguagePreference('ilokano');
+        if (persistPreference) setStoredLanguagePreference('ilokano');
         return 'ilokano';
     }
     if (/\b(ako|ikaw|po|kamusta|salamat|hindi|oo|pwede|gusto)\b/.test(message)) {
-        setStoredLanguagePreference('filipino');
+        if (persistPreference) setStoredLanguagePreference('filipino');
         return 'filipino';
     }
-    if (/\b(the|and|is|are|you|please|can|could|what|how|help)\b/.test(message)) {
-        setStoredLanguagePreference('english');
+    if (/\b(hello|hi|hey|thanks|thank you|the|and|is|are|you|please|can|could|what|how|help)\b/.test(message)) {
+        if (persistPreference) setStoredLanguagePreference('english');
         return 'english';
+    }
+
+    return null;
+}
+
+function inferLanguageFromRecentUserTurns() {
+    for (let i = conversationHistory.length - 1; i >= 0; i -= 1) {
+        const turn = conversationHistory[i];
+        if (!turn || turn.role !== 'user') continue;
+        const inferred = detectLanguageHint(turn.content, false);
+        if (inferred && inferred !== 'unsupported') {
+            return inferred;
+        }
+    }
+    return null;
+}
+
+function detectFallbackLanguage(text) {
+    const immediate = detectLanguageHint(text, true);
+    if (immediate) {
+        return immediate;
+    }
+
+    // Prefer the current conversation's recent user language over old global preference.
+    const recentUserLanguage = inferLanguageFromRecentUserTurns();
+    if (recentUserLanguage) {
+        setStoredLanguagePreference(recentUserLanguage);
+        return recentUserLanguage;
     }
 
     const storedPreference = getStoredLanguagePreference();

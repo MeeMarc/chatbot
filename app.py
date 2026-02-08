@@ -184,6 +184,10 @@ def _is_transient_db_error(error_message):
         or "could not send data to server" in message
         or "connection reset by peer" in message
         or "broken pipe" in message
+        or "ssl error: wrong version number" in message
+        or "wrong version number" in message
+        or "bad record mac" in message
+        or "sslv3 alert handshake failure" in message
     )
 
 
@@ -556,6 +560,15 @@ def execute_query(query, params=None, fetch=True):
                 except Exception:
                     pass
                 db_pool = None
+
+                # Drop stale connection reference so finally block does not
+                # return an unkeyed connection into a fresh pool instance.
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = None
+
                 init_db_pool()
                 backoff_seconds = DB_RETRY_BACKOFF_SECONDS[min(attempt + 1, len(DB_RETRY_BACKOFF_SECONDS) - 1)]
                 if backoff_seconds > 0:
