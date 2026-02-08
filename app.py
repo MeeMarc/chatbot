@@ -63,6 +63,28 @@ PORT = int(os.getenv('PORT', 3000))
 # Database connection pool
 db_pool = None
 
+DB_QUERY_MAX_ATTEMPTS = 3
+DB_RETRY_BACKOFF_SECONDS = (0.0, 0.15, 0.35)
+
+
+def _env_int(name, default):
+    """Read integer env var with fallback."""
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_bool(name, default=False):
+    """Read boolean env var with fallback."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
 GEMINI_DEFAULT_MODELS = [
     "gemini-2.5-flash",
     "gemini-2.0-flash",
@@ -87,16 +109,32 @@ GEMINI_MODEL_ALIASES = {
 
 GEMINI_KEY_STATE = {}
 GEMINI_KEY_CURSOR = 0
-GEMINI_RATE_LIMIT_COOLDOWN_SECONDS = 120
-GEMINI_AUTH_COOLDOWN_SECONDS = 6 * 60 * 60
-GEMINI_TRANSIENT_COOLDOWN_SECONDS = 20
-GEMINI_REQUEST_PASSES = 1
-GEMINI_MAX_PROMPT_CHARS = 12000
-GEMINI_HTTP_TIMEOUT_SECONDS = 6
-GEMINI_REQUEST_DEADLINE_SECONDS = 10
-GEMINI_MAX_ATTEMPTS_PER_REQUEST = 6
-GEMINI_MODEL_FALLBACK_LIMIT = 2
-GEMINI_MAX_KEYS_PER_REQUEST = 4
+LOW_QUOTA_MODE = _env_bool("LOW_QUOTA_MODE", default=True)
+
+GEMINI_RATE_LIMIT_COOLDOWN_SECONDS = max(5, _env_int("GEMINI_RATE_LIMIT_COOLDOWN_SECONDS", 120))
+GEMINI_AUTH_COOLDOWN_SECONDS = max(30, _env_int("GEMINI_AUTH_COOLDOWN_SECONDS", 6 * 60 * 60))
+GEMINI_TRANSIENT_COOLDOWN_SECONDS = max(2, _env_int("GEMINI_TRANSIENT_COOLDOWN_SECONDS", 20))
+
+if LOW_QUOTA_MODE:
+    GEMINI_REQUEST_PASSES = max(1, _env_int("GEMINI_REQUEST_PASSES", 1))
+    GEMINI_MAX_PROMPT_CHARS = max(1200, _env_int("GEMINI_MAX_PROMPT_CHARS", 5000))
+    GEMINI_HTTP_TIMEOUT_SECONDS = max(4, _env_int("GEMINI_HTTP_TIMEOUT_SECONDS", 6))
+    GEMINI_REQUEST_DEADLINE_SECONDS = max(6, _env_int("GEMINI_REQUEST_DEADLINE_SECONDS", 8))
+    GEMINI_MAX_ATTEMPTS_PER_REQUEST = max(1, _env_int("GEMINI_MAX_ATTEMPTS_PER_REQUEST", 1))
+    GEMINI_MODEL_FALLBACK_LIMIT = max(1, _env_int("GEMINI_MODEL_FALLBACK_LIMIT", 1))
+    GEMINI_MAX_KEYS_PER_REQUEST = max(1, _env_int("GEMINI_MAX_KEYS_PER_REQUEST", 1))
+    GEMINI_MAX_OUTPUT_TOKENS = max(80, _env_int("GEMINI_MAX_OUTPUT_TOKENS", 420))
+    GEMINI_DEFAULT_OUTPUT_TOKENS = max(80, min(GEMINI_MAX_OUTPUT_TOKENS, _env_int("GEMINI_DEFAULT_OUTPUT_TOKENS", 220)))
+else:
+    GEMINI_REQUEST_PASSES = max(1, _env_int("GEMINI_REQUEST_PASSES", 1))
+    GEMINI_MAX_PROMPT_CHARS = max(1200, _env_int("GEMINI_MAX_PROMPT_CHARS", 12000))
+    GEMINI_HTTP_TIMEOUT_SECONDS = max(4, _env_int("GEMINI_HTTP_TIMEOUT_SECONDS", 6))
+    GEMINI_REQUEST_DEADLINE_SECONDS = max(6, _env_int("GEMINI_REQUEST_DEADLINE_SECONDS", 10))
+    GEMINI_MAX_ATTEMPTS_PER_REQUEST = max(1, _env_int("GEMINI_MAX_ATTEMPTS_PER_REQUEST", 6))
+    GEMINI_MODEL_FALLBACK_LIMIT = max(1, _env_int("GEMINI_MODEL_FALLBACK_LIMIT", 2))
+    GEMINI_MAX_KEYS_PER_REQUEST = max(1, _env_int("GEMINI_MAX_KEYS_PER_REQUEST", 4))
+    GEMINI_MAX_OUTPUT_TOKENS = max(80, _env_int("GEMINI_MAX_OUTPUT_TOKENS", 2048))
+    GEMINI_DEFAULT_OUTPUT_TOKENS = max(80, min(GEMINI_MAX_OUTPUT_TOKENS, _env_int("GEMINI_DEFAULT_OUTPUT_TOKENS", 300)))
 
 
 def _clamp_float(value, default, minimum, maximum):
@@ -128,6 +166,24 @@ def _shorten_prompt(prompt, max_chars=GEMINI_MAX_PROMPT_CHARS):
         prompt[:head]
         + "\n\n[Conversation context trimmed for reliability]\n\n"
         + prompt[-tail:]
+    )
+
+
+def _is_transient_db_error(error_message):
+    """Best-effort detection for retryable transport-level DB failures."""
+    message = str(error_message).lower()
+    return (
+        "connection already closed" in message
+        or "server closed the connection unexpectedly" in message
+        or "terminating connection" in message
+        or "connection not open" in message
+        or "ssl connection has been closed unexpectedly" in message
+        or "ssl syscall error: eof detected" in message
+        or "eof detected" in message
+        or "could not receive data from server" in message
+        or "could not send data to server" in message
+        or "connection reset by peer" in message
+        or "broken pipe" in message
     )
 
 
@@ -359,6 +415,15 @@ def init_db_pool():
 
 # Initialize pool on startup
 init_db_pool()
+logger.info(
+    "Gemini low-quota mode=%s (keys/request=%s models/request=%s attempts/request=%s max_output_tokens=%s prompt_chars=%s)",
+    LOW_QUOTA_MODE,
+    GEMINI_MAX_KEYS_PER_REQUEST,
+    GEMINI_MODEL_FALLBACK_LIMIT,
+    GEMINI_MAX_ATTEMPTS_PER_REQUEST,
+    GEMINI_MAX_OUTPUT_TOKENS,
+    GEMINI_MAX_PROMPT_CHARS,
+)
 
 def get_db_connection():
     """Get a database connection from the pool"""
@@ -373,7 +438,8 @@ def get_db_connection():
             logger.error("Database connection pool is not initialized. Check DATABASE_URL in .env file")
             return None
 
-    for attempt in range(2):
+    max_attempts = 3
+    for attempt in range(max_attempts):
         try:
             conn = db_pool.getconn()
             if not conn or conn.closed:
@@ -385,7 +451,12 @@ def get_db_connection():
                 raise psycopg2.InterfaceError("Received closed connection from pool")
             return conn
         except Exception as e:
-            logger.error(f"Error getting database connection (attempt {attempt + 1}/2): {e}")
+            logger.error(
+                "Error getting database connection (attempt %s/%s): %s",
+                attempt + 1,
+                max_attempts,
+                e,
+            )
 
             # Recreate pool once if acquisition fails.
             if attempt == 0:
@@ -397,6 +468,8 @@ def get_db_connection():
                 db_pool = None
                 if not init_db_pool():
                     break
+            elif attempt < (max_attempts - 1):
+                time.sleep(DB_RETRY_BACKOFF_SECONDS[min(attempt + 1, len(DB_RETRY_BACKOFF_SECONDS) - 1)])
             else:
                 break
 
@@ -433,7 +506,7 @@ def execute_query(query, params=None, fetch=True):
         raise Exception("DATABASE_URL environment variable is not set. Please create a .env file with your database connection string.")
 
     last_error = None
-    max_attempts = 2
+    max_attempts = DB_QUERY_MAX_ATTEMPTS
     for attempt in range(max_attempts):
         conn = get_db_connection()
         if not conn:
@@ -465,23 +538,10 @@ def execute_query(query, params=None, fetch=True):
                 conn.commit()
                 logger.debug(f"Committed {query.strip().upper().split()[0]} operation")
                 return result
-        except (psycopg2.InterfaceError, psycopg2.OperationalError) as e:
+        except psycopg2.Error as e:
             last_error = e
             close_conn = True
-            message = str(e).lower()
-            transient_conn_issue = (
-                "connection already closed" in message
-                or "server closed the connection unexpectedly" in message
-                or "terminating connection" in message
-                or "connection not open" in message
-                or "ssl connection has been closed unexpectedly" in message
-                or "ssl syscall error: eof detected" in message
-                or "eof detected" in message
-                or "could not receive data from server" in message
-                or "could not send data to server" in message
-                or "connection reset by peer" in message
-                or "broken pipe" in message
-            )
+            transient_conn_issue = _is_transient_db_error(e)
 
             try:
                 conn.rollback()
@@ -497,6 +557,9 @@ def execute_query(query, params=None, fetch=True):
                     pass
                 db_pool = None
                 init_db_pool()
+                backoff_seconds = DB_RETRY_BACKOFF_SECONDS[min(attempt + 1, len(DB_RETRY_BACKOFF_SECONDS) - 1)]
+                if backoff_seconds > 0:
+                    time.sleep(backoff_seconds)
 
                 logger.warning(
                     "Transient DB connection issue detected. Retrying query (%s/%s). Error: %s",
@@ -641,7 +704,7 @@ def ai_generate():
 
         generation_config = {
             'temperature': _clamp_float(generation_input.get('temperature'), 0.9, 0.0, 2.0),
-            'maxOutputTokens': _clamp_int(generation_input.get('maxOutputTokens'), 300, 1, 2048),
+            'maxOutputTokens': _clamp_int(generation_input.get('maxOutputTokens'), GEMINI_DEFAULT_OUTPUT_TOKENS, 1, GEMINI_MAX_OUTPUT_TOKENS),
             'topP': _clamp_float(generation_input.get('topP'), 0.95, 0.0, 1.0),
             'topK': _clamp_int(generation_input.get('topK'), 40, 1, 100),
         }
@@ -724,37 +787,52 @@ def ai_generate():
             if stop_outer_loops:
                 break
 
-            logger.warning(
-                "Gemini request pass %s/%s failed. Retrying with next key/model set.",
-                pass_index + 1,
-                len(retry_waits),
-            )
+            if pass_index < (len(retry_waits) - 1):
+                logger.warning(
+                    "Gemini request pass %s/%s failed. Retrying with next key/model set.",
+                    pass_index + 1,
+                    len(retry_waits),
+                )
 
         is_dev = os.getenv('FLASK_ENV') == 'development' or os.getenv('NODE_ENV') == 'development'
         dominant_error_type = max(error_stats, key=error_stats.get) if error_stats else 'unknown'
 
         final_error_type = dominant_error_type
+        status_code = 503
         if is_dev:
             safe_error = last_error
         elif deadline_exceeded:
             safe_error = 'AI request timeout. Please try again.'
             final_error_type = 'timeout'
-        elif max_attempts_hit:
-            safe_error = 'AI service is busy right now. Please try again.'
-            final_error_type = 'busy'
         elif dominant_error_type == 'rate_limit':
             safe_error = 'AI usage limit reached. Please wait and try again shortly.'
+            status_code = 429
         elif dominant_error_type == 'auth':
             safe_error = 'AI credentials are invalid or expired on the server.'
         elif dominant_error_type == 'model_not_found':
             safe_error = 'Configured AI model is unavailable. Please try again shortly.'
+        elif max_attempts_hit:
+            safe_error = 'AI service is busy right now. Please try again.'
+            final_error_type = 'busy'
         else:
             safe_error = 'AI service request failed. Please try again.'
+
+        logger.warning(
+            "Gemini generation failed after %s attempt(s). dominant_error=%s stats=%s deadline_exceeded=%s max_attempts_hit=%s",
+            attempts_made,
+            dominant_error_type,
+            error_stats,
+            deadline_exceeded,
+            max_attempts_hit,
+        )
+
+        if dominant_error_type == 'rate_limit':
+            status_code = 429
 
         return jsonify({
             'error': safe_error,
             'errorType': final_error_type
-        }), 503
+        }), status_code
     except Exception as e:
         logger.exception("Unexpected /api/ai/generate failure: %s", e)
         is_dev = os.getenv('FLASK_ENV') == 'development' or os.getenv('NODE_ENV') == 'development'

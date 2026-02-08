@@ -11,6 +11,9 @@ let isGeneratingResponse = false;
 let abortController = null; // For canceling AI requests
 const BATCH_DELAY = 500; // Wait 500ms after last message before responding (allows multiple rapid messages to batch together)
 const AI_BACKEND_REQUEST_TIMEOUT_MS = 7000;
+const LOW_QUOTA_MODE = true;
+const MAX_CONTEXT_TURNS = LOW_QUOTA_MODE ? 6 : 10;
+const AI_STRICT_CORRECTION_PASSES = LOW_QUOTA_MODE ? 0 : 2;
 const LEGACY_BROWSER_KEY_STORAGE_KEYS = [
     'gemini_api_keys_global',
     'gemini_api_key',
@@ -1753,13 +1756,16 @@ async function processBatchedMessages() {
         console.error("❌ Error stack:", error.stack);
 
         const latestUserMessage = messagesToProcess[messagesToProcess.length - 1] || combinedMessage;
-        const fallbackReply = buildLocalFallbackReply(latestUserMessage);
+        const aiErrorType = classifyAIError(error);
+        const fallbackReply = buildLocalFallbackReply(latestUserMessage, error);
         appendAI(fallbackReply);
 
         showToast({
             type: 'warning',
-            title: 'Temporary AI Issue',
-            message: 'Using backup reply mode for this message. Please try again in a few seconds.',
+            title: aiErrorType === 'rate_limit' ? 'AI Quota Reached' : 'Temporary AI Issue',
+            message: aiErrorType === 'rate_limit'
+                ? 'Backend Gemini keys hit quota/rate limits. Add fresh keys or wait for reset.'
+                : 'Using backup reply mode for this message. Please try again in a few seconds.',
             duration: 3500
         });
         console.error("Full error object:", error);
@@ -2046,11 +2052,38 @@ function buildUnsupportedLanguageNotice() {
     return "Sorry, I can only reply in Ilokano, Filipino, or English for now. I can't reply in that language/dialect yet.";
 }
 
-function buildLocalFallbackReply(userMessage) {
+function classifyAIError(error) {
+    const message = String(error?.message || '').toLowerCase();
+    if (!message) return 'generic';
+    if (
+        message.includes('usage limit')
+        || message.includes('quota')
+        || message.includes('rate limit')
+        || message.includes('resource exhausted')
+        || message.includes('429')
+    ) {
+        return 'rate_limit';
+    }
+    if (message.includes('timeout')) return 'timeout';
+    if (message.includes('busy')) return 'busy';
+    return 'generic';
+}
+
+function buildLocalFallbackReply(userMessage, error = null) {
     const language = detectFallbackLanguage(userMessage);
+    const errorType = classifyAIError(error);
 
     if (language === 'unsupported') {
         return buildUnsupportedLanguageNotice();
+    }
+    if (errorType === 'rate_limit') {
+        if (language === 'filipino') {
+            return 'Narito pa rin ako para sa iyo. Naabot na ng AI service ang usage limit ngayon. Pakisubukang muli mamaya o i-update ang backend API keys.';
+        }
+        if (language === 'ilokano') {
+            return 'Addaak pay ditoy para kenka. Naal-alaan ti usage limit ti AI service ita. Padasem manen inton ud-udina wenno i-update ti backend API keys.';
+        }
+        return 'I am still here with you. The AI service reached its usage limit right now. Please try again later or update backend API keys.';
     }
     if (language === 'filipino') {
         return 'Narito pa rin ako para sa iyo. May pansamantalang problema sa koneksyon sa AI service ngayon. Pakisubukang ipadala muli ang mensahe mo pagkalipas ng ilang segundo.';
@@ -2153,8 +2186,11 @@ function buildTaskFulfillmentDirective(latestUserMessage, detectedLanguage, cons
 
 function getResponseGenerationConfig(constraint) {
     if (constraint?.count) {
-        const unitMultiplier = constraint.unit === 'sentences' ? 90 : 50;
-        const maxOutputTokens = Math.max(700, Math.min(2400, constraint.count * unitMultiplier));
+        const unitMultiplier = constraint.unit === 'sentences' ? 70 : 40;
+        const maxOutputTokens = Math.max(
+            LOW_QUOTA_MODE ? 220 : 700,
+            Math.min(LOW_QUOTA_MODE ? 650 : 2400, constraint.count * unitMultiplier)
+        );
         return {
             temperature: 0.45,
             maxOutputTokens,
@@ -2165,7 +2201,7 @@ function getResponseGenerationConfig(constraint) {
     if (constraint?.asksForConcreteLanguageItems) {
         return {
             temperature: 0.5,
-            maxOutputTokens: 900,
+            maxOutputTokens: LOW_QUOTA_MODE ? 320 : 900,
             topP: 0.9,
             topK: 32
         };
@@ -2173,7 +2209,7 @@ function getResponseGenerationConfig(constraint) {
 
     return {
         temperature: 0.75,
-        maxOutputTokens: 300,
+        maxOutputTokens: LOW_QUOTA_MODE ? 220 : 300,
         topP: 0.95,
         topK: 40
     };
@@ -2186,7 +2222,7 @@ async function callBackendAIGenerate(prompt, generationConfig = {}, options = {}
         preferredModel: preferredModel,
         generationConfig: {
             temperature: generationConfig.temperature ?? 0.9,
-            maxOutputTokens: generationConfig.maxOutputTokens ?? 300,
+            maxOutputTokens: generationConfig.maxOutputTokens ?? (LOW_QUOTA_MODE ? 220 : 300),
             topP: generationConfig.topP ?? 0.95,
             topK: generationConfig.topK ?? 40
         }
@@ -2286,8 +2322,17 @@ async function generateAIResponse(combinedMessage, originalMessages = null) {
         return notice;
     }
     
-    // Enhanced system prompt as Personal Guide for Emotional Well-being
-    const systemPrompt = `${RESTRICTION}
+    const compactSystemPrompt = `${RESTRICTION}
+
+You are a warm, empathetic emotional wellness companion.
+- Keep replies concise and useful (2-4 sentences unless the user asks for a list/count).
+- Prioritize the user's exact request and avoid filler.
+- Keep language natural and supportive.
+
+${INSTRUCTIONS}`;
+
+    // Richer prompt for normal mode; compact prompt in low-quota mode.
+    const richSystemPrompt = `${RESTRICTION}
 
 You are Your Personal Guide for Emotional Well-being. You are a friendly, empathetic, and supportive emotional wellness companion. Your personality traits:
 - Warm, caring, and genuinely concerned about users' emotional wellbeing
@@ -2304,8 +2349,9 @@ You are Your Personal Guide for Emotional Well-being. You are a friendly, empath
 Your role is to be a reliable emotional support companion that helps users feel heard, understood, and supported in their journey toward emotional wellbeing.
 
 ${INSTRUCTIONS}`;
+    const systemPrompt = LOW_QUOTA_MODE ? compactSystemPrompt : richSystemPrompt;
     
-    const context = conversationHistory.slice(-10).map(m => 
+    const context = conversationHistory.slice(-MAX_CONTEXT_TURNS).map(m => 
         m.role === 'user' ? `User: ${m.content}` : `Assistant: ${m.content}`
     ).join('\n');
 
@@ -2325,7 +2371,7 @@ ${INSTRUCTIONS}`;
             let actualCount = countNumberedItems(aiResponse);
             let correctionAttempt = 0;
 
-            while (actualCount !== requestConstraint.count && correctionAttempt < 2) {
+            while (actualCount !== requestConstraint.count && correctionAttempt < AI_STRICT_CORRECTION_PASSES) {
                 const correctionPrompt = `${systemPrompt}\n\n${turnLanguageDirective}\n\nCORRECTION MODE:
 - Return exactly ${requestConstraint.count} ${requestConstraint.unit}.
 - Number each item from 1 to ${requestConstraint.count}.
