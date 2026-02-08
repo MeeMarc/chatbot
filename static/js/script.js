@@ -1765,10 +1765,16 @@ async function processBatchedMessages() {
 
         showToast({
             type: 'warning',
-            title: aiErrorType === 'rate_limit' ? 'AI Quota Reached' : 'Temporary AI Issue',
+            title: aiErrorType === 'rate_limit'
+                ? 'AI Quota Reached'
+                : aiErrorType === 'safety'
+                    ? 'Content Boundary'
+                    : 'Temporary AI Issue',
             message: aiErrorType === 'rate_limit'
                 ? 'Backend Gemini keys hit quota/rate limits. Add fresh keys or wait for reset.'
-                : 'Using backup reply mode for this message. Please try again in a few seconds.',
+                : aiErrorType === 'safety'
+                    ? 'The request triggered a safety boundary. The assistant sent a safe complete reply instead.'
+                    : 'Using backup reply mode for this message. Please try again in a few seconds.',
             duration: 3500
         });
         console.error("Full error object:", error);
@@ -2138,6 +2144,15 @@ function classifyAIError(error) {
     ) {
         return 'rate_limit';
     }
+    if (
+        message.includes('safety')
+        || message.includes('explicit')
+        || message.includes('sexual')
+        || message.includes('prohibited')
+        || message.includes('blocked')
+    ) {
+        return 'safety';
+    }
     if (message.includes('timeout')) return 'timeout';
     if (message.includes('busy')) return 'busy';
     return 'generic';
@@ -2158,6 +2173,15 @@ function buildLocalFallbackReply(userMessage, error = null) {
             return 'Addaak pay ditoy para kenka. Naal-alaan ti usage limit ti AI service ita. Padasem manen inton ud-udina wenno i-update ti backend API keys.';
         }
         return 'I am still here with you. The AI service reached its usage limit right now. Please try again later or update backend API keys.';
+    }
+    if (errorType === 'safety') {
+        if (language === 'filipino') {
+            return 'Nandito pa rin ako para suportahan ka, pero hindi ako puwedeng tumugon sa sexual o explicit na hiling. Kung gusto mo, puwede nating pag-usapan ang nararamdaman mo at healthy boundaries.';
+        }
+        if (language === 'ilokano') {
+            return 'Addaak pay ditoy tapno suportaranka, ngem saanak a makatulong iti sexual wenno explicit a request. No kayatmo, mabalin tayo a pagsarsaritaen dagiti mariknam ken dagiti nasayaat a boundaries.';
+        }
+        return "I am still here to support you, but I can't respond to sexual or explicit requests. If you want, we can talk about what you're feeling and healthy boundaries.";
     }
     if (language === 'filipino') {
         return 'Narito pa rin ako para sa iyo. May pansamantalang problema sa koneksyon sa AI service ngayon. Pakisubukang ipadala muli ang mensahe mo pagkalipas ng ilang segundo.';
@@ -2255,7 +2279,8 @@ function buildTaskFulfillmentDirective(latestUserMessage, detectedLanguage, cons
     return `TASK MODE: General response.
 - Prioritize answering the user's exact request first.
 - Keep the whole reply in ${detectedLanguage}.
-- Be concise but complete.`;
+- Be concise but complete.
+- Never end mid-word or mid-sentence.`;
 }
 
 function getResponseGenerationConfig(constraint) {

@@ -6,7 +6,7 @@ Connects to Neon DB (PostgreSQL) for persistent storage
 from flask import Flask, request, jsonify, render_template, send_from_directory, redirect
 from flask_cors import CORS
 import psycopg2
-from psycopg2.pool import SimpleConnectionPool
+from psycopg2.pool import ThreadedConnectionPool
 from psycopg2.extras import RealDictCursor
 import os
 import json
@@ -62,6 +62,7 @@ PORT = int(os.getenv('PORT', 3000))
 
 # Database connection pool
 db_pool = None
+DB_CONNECTION_LAST_USED = {}
 
 DB_QUERY_MAX_ATTEMPTS = 3
 DB_RETRY_BACKOFF_SECONDS = (0.0, 0.15, 0.35)
@@ -84,6 +85,13 @@ def _env_bool(name, default=False):
     if raw is None:
         return default
     return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+DB_POOL_MIN_CONN = max(1, _env_int("DB_POOL_MIN_CONN", 1))
+DB_POOL_MAX_CONN = max(DB_POOL_MIN_CONN, _env_int("DB_POOL_MAX_CONN", 20))
+DB_CONNECT_TIMEOUT_SECONDS = max(2, _env_int("DB_CONNECT_TIMEOUT_SECONDS", 10))
+DB_VALIDATE_CONNECTIONS = _env_bool("DB_VALIDATE_CONNECTIONS", True)
+DB_IDLE_PING_SECONDS = max(5, _env_int("DB_IDLE_PING_SECONDS", 45))
 
 GEMINI_DEFAULT_MODELS = [
     "gemini-2.5-flash",
@@ -303,6 +311,27 @@ def build_model_candidates(preferred_model):
     return candidates
 
 
+def _extract_candidate_text(candidate):
+    """Join all text parts from a Gemini candidate payload."""
+    if not isinstance(candidate, dict):
+        return ""
+
+    content = candidate.get("content") or {}
+    parts = content.get("parts") or []
+    if not isinstance(parts, list):
+        return ""
+
+    text_chunks = []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        chunk = part.get("text")
+        if isinstance(chunk, str) and chunk:
+            text_chunks.append(chunk)
+
+    return "".join(text_chunks).strip()
+
+
 def call_gemini_generate(api_key, model, prompt, generation_config):
     """Call Gemini GenerateContent API for one key+model."""
     model = (model or "").strip()
@@ -310,37 +339,114 @@ def call_gemini_generate(api_key, model, prompt, generation_config):
         model = model.split("models/", 1)[1]
     model = GEMINI_MODEL_ALIASES.get(model, model)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": generation_config,
-    }
-    encoded_payload = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url=url,
-        data=encoded_payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
+    request_generation_config = dict(generation_config or {})
+    request_generation_config["maxOutputTokens"] = _clamp_int(
+        request_generation_config.get("maxOutputTokens"),
+        GEMINI_DEFAULT_OUTPUT_TOKENS,
+        1,
+        GEMINI_MAX_OUTPUT_TOKENS,
     )
+    used_max_token_retry = False
 
     try:
-        with urllib.request.urlopen(req, timeout=GEMINI_HTTP_TIMEOUT_SECONDS) as response:
-            raw = response.read().decode("utf-8")
-            data = json.loads(raw)
-            text = (
-                data.get("candidates", [{}])[0]
-                .get("content", {})
-                .get("parts", [{}])[0]
-                .get("text", "")
-                .strip()
+        while True:
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": request_generation_config,
+            }
+            encoded_payload = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                url=url,
+                data=encoded_payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
             )
-            if not text:
+
+            with urllib.request.urlopen(req, timeout=GEMINI_HTTP_TIMEOUT_SECONDS) as response:
+                raw = response.read().decode("utf-8")
+                data = json.loads(raw)
+
+            prompt_feedback = data.get("promptFeedback") or {}
+            block_reason = str(prompt_feedback.get("blockReason") or "").strip()
+            if block_reason:
+                return {
+                    "ok": False,
+                    "status": 400,
+                    "error_type": "safety",
+                    "error": f"Gemini blocked prompt ({block_reason}).",
+                }
+
+            candidates = data.get("candidates") or []
+            if not candidates:
                 return {
                     "ok": False,
                     "status": 502,
                     "error_type": "api",
-                    "error": "Gemini response did not include text output.",
+                    "error": "Gemini response did not include candidates.",
                 }
-            return {"ok": True, "model": model, "text": text}
+
+            best_text = ""
+            best_finish_reason = ""
+            saw_safety_finish = False
+
+            for candidate in candidates:
+                finish_reason = str(candidate.get("finishReason") or "").upper()
+                text = _extract_candidate_text(candidate)
+
+                if finish_reason in {
+                    "SAFETY",
+                    "PROHIBITED_CONTENT",
+                    "BLOCKLIST",
+                    "RECITATION",
+                    "SPII",
+                }:
+                    saw_safety_finish = True
+                    continue
+
+                if text and (not best_text or finish_reason in {"STOP", "FINISH_REASON_UNSPECIFIED", ""}):
+                    best_text = text
+                    best_finish_reason = finish_reason
+                    if finish_reason in {"STOP", "FINISH_REASON_UNSPECIFIED", ""}:
+                        break
+
+            if best_text:
+                if (
+                    best_finish_reason == "MAX_TOKENS"
+                    and not used_max_token_retry
+                    and request_generation_config["maxOutputTokens"] < GEMINI_MAX_OUTPUT_TOKENS
+                ):
+                    current_max = request_generation_config["maxOutputTokens"]
+                    next_max = min(
+                        GEMINI_MAX_OUTPUT_TOKENS,
+                        max(current_max + 256, int(current_max * 1.8)),
+                    )
+                    if next_max > current_max:
+                        used_max_token_retry = True
+                        request_generation_config = dict(request_generation_config)
+                        request_generation_config["maxOutputTokens"] = next_max
+                        logger.warning(
+                            "Gemini hit MAX_TOKENS (%s). Retrying once with maxOutputTokens=%s.",
+                            current_max,
+                            next_max,
+                        )
+                        continue
+
+                return {"ok": True, "model": model, "text": best_text}
+
+            if saw_safety_finish:
+                return {
+                    "ok": False,
+                    "status": 400,
+                    "error_type": "safety",
+                    "error": "Gemini response was blocked by safety filters.",
+                }
+
+            return {
+                "ok": False,
+                "status": 502,
+                "error_type": "api",
+                "error": "Gemini response did not include text output.",
+            }
     except urllib.error.HTTPError as http_err:
         body = http_err.read().decode("utf-8", errors="ignore")
         message = body or str(http_err)
@@ -364,6 +470,14 @@ def call_gemini_generate(api_key, model, prompt, generation_config):
             err_type = "auth"
         elif status == 429 or "quota" in lowered or "rate limit" in lowered or "resource exhausted" in lowered:
             err_type = "rate_limit"
+        elif status == 400 and (
+            "safety" in lowered
+            or "blocked" in lowered
+            or "prohibited" in lowered
+            or "sexual" in lowered
+            or "unsafe" in lowered
+        ):
+            err_type = "safety"
         elif status == 404 and "not found" in lowered:
             err_type = "model_not_found"
         elif status >= 500:
@@ -392,6 +506,31 @@ def call_gemini_generate(api_key, model, prompt, generation_config):
             "error": str(exc),
         }
 
+
+def _should_ping_connection(conn):
+    """Check whether an idle pooled connection should be validated."""
+    if not DB_VALIDATE_CONNECTIONS:
+        return False
+    last_used_at = DB_CONNECTION_LAST_USED.get(id(conn))
+    if last_used_at is None:
+        return True
+    return (time.time() - last_used_at) >= DB_IDLE_PING_SECONDS
+
+
+def _ping_connection(conn):
+    """Run a cheap health-check query against a pooled connection."""
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
 def init_db_pool():
     """Initialize database connection pool"""
     global db_pool
@@ -399,11 +538,12 @@ def init_db_pool():
         logger.error("❌ DATABASE_URL environment variable is not set. Please create a .env file with DATABASE_URL=...")
         return False
     try:
-        db_pool = SimpleConnectionPool(
-            minconn=1,
-            maxconn=20,
+        DB_CONNECTION_LAST_USED.clear()
+        db_pool = ThreadedConnectionPool(
+            minconn=DB_POOL_MIN_CONN,
+            maxconn=DB_POOL_MAX_CONN,
             dsn=DATABASE_URL,
-            connect_timeout=10,
+            connect_timeout=DB_CONNECT_TIMEOUT_SECONDS,
             keepalives=1,
             keepalives_idle=30,
             keepalives_interval=10,
@@ -448,11 +588,23 @@ def get_db_connection():
             conn = db_pool.getconn()
             if not conn or conn.closed:
                 if conn:
+                    DB_CONNECTION_LAST_USED.pop(id(conn), None)
                     try:
                         db_pool.putconn(conn, close=True)
                     except Exception:
                         pass
                 raise psycopg2.InterfaceError("Received closed connection from pool")
+            if _should_ping_connection(conn) and not _ping_connection(conn):
+                DB_CONNECTION_LAST_USED.pop(id(conn), None)
+                try:
+                    db_pool.putconn(conn, close=True)
+                except Exception:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                logger.warning("Discarded stale DB connection from pool during checkout")
+                continue
             return conn
         except Exception as e:
             logger.error(
@@ -470,6 +622,7 @@ def get_db_connection():
                 except Exception:
                     pass
                 db_pool = None
+                DB_CONNECTION_LAST_USED.clear()
                 if not init_db_pool():
                     break
             elif attempt < (max_attempts - 1):
@@ -485,7 +638,9 @@ def return_db_connection(conn, close_conn=False):
         return
 
     global db_pool
+    conn_key = id(conn)
     if not db_pool:
+        DB_CONNECTION_LAST_USED.pop(conn_key, None)
         try:
             conn.close()
         except Exception:
@@ -494,8 +649,13 @@ def return_db_connection(conn, close_conn=False):
 
     try:
         should_close = close_conn or bool(getattr(conn, 'closed', 0))
+        if should_close:
+            DB_CONNECTION_LAST_USED.pop(conn_key, None)
+        else:
+            DB_CONNECTION_LAST_USED[conn_key] = time.time()
         db_pool.putconn(conn, close=should_close)
     except Exception as e:
+        DB_CONNECTION_LAST_USED.pop(conn_key, None)
         logger.error(f"Error returning database connection: {e}")
         try:
             conn.close()
@@ -560,6 +720,7 @@ def execute_query(query, params=None, fetch=True):
                 except Exception:
                     pass
                 db_pool = None
+                DB_CONNECTION_LAST_USED.clear()
 
                 # Drop stale connection reference so finally block does not
                 # return an unkeyed connection into a fresh pool instance.
@@ -820,6 +981,9 @@ def ai_generate():
         elif dominant_error_type == 'rate_limit':
             safe_error = 'AI usage limit reached. Please wait and try again shortly.'
             status_code = 429
+        elif dominant_error_type == 'safety':
+            safe_error = "I can support emotional wellbeing, but I can't provide sexual or explicit content."
+            status_code = 400
         elif dominant_error_type == 'auth':
             safe_error = 'AI credentials are invalid or expired on the server.'
         elif dominant_error_type == 'model_not_found':
