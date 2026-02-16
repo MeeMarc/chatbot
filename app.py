@@ -19,6 +19,7 @@ import bcrypt
 from datetime import datetime, timedelta, timezone
 import logging
 from functools import wraps
+from threading import Lock
 
 # Load environment variables
 load_dotenv()
@@ -63,6 +64,7 @@ PORT = int(os.getenv('PORT', 3000))
 
 # Database connection pool
 db_pool = None
+pool_lock = Lock()
 DB_CONNECTION_LAST_USED = {}
 
 DB_QUERY_MAX_ATTEMPTS = 3
@@ -532,31 +534,43 @@ def _ping_connection(conn):
     except Exception:
         return False
 
-def init_db_pool():
+def init_db_pool(force=False):
     """Initialize database connection pool"""
     global db_pool
     if not DATABASE_URL:
         logger.error("❌ DATABASE_URL environment variable is not set. Please create a .env file with DATABASE_URL=...")
         return False
-    try:
-        DB_CONNECTION_LAST_USED.clear()
-        db_pool = ThreadedConnectionPool(
-            minconn=DB_POOL_MIN_CONN,
-            maxconn=DB_POOL_MAX_CONN,
-            dsn=DATABASE_URL,
-            connect_timeout=DB_CONNECT_TIMEOUT_SECONDS,
-            keepalives=1,
-            keepalives_idle=30,
-            keepalives_interval=10,
-            keepalives_count=5,
-            application_name='emotional-ai-chatbot'
-        )
-        logger.info("✅ Database connection pool initialized")
-        return True
-    except Exception as e:
-        logger.error(f"❌ Database connection error: {e}")
-        logger.error("Check that DATABASE_URL in .env file is correct")
-        return False
+    
+    with pool_lock:
+        if db_pool and not force:
+            return True
+            
+        if db_pool:
+            try:
+                db_pool.closeall()
+            except Exception:
+                pass
+            db_pool = None
+
+        try:
+            DB_CONNECTION_LAST_USED.clear()
+            db_pool = ThreadedConnectionPool(
+                minconn=DB_POOL_MIN_CONN,
+                maxconn=DB_POOL_MAX_CONN,
+                dsn=DATABASE_URL,
+                connect_timeout=DB_CONNECT_TIMEOUT_SECONDS,
+                keepalives=1,
+                keepalives_idle=30,
+                keepalives_interval=10,
+                keepalives_count=5,
+                application_name='emotional-ai-chatbot'
+            )
+            logger.info("✅ Database connection pool initialized")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Database connection error: {e}")
+            logger.error("Check that DATABASE_URL in .env file is correct")
+            return False
 
 # Initialize pool on startup
 init_db_pool()
@@ -617,14 +631,8 @@ def get_db_connection():
 
             # Recreate pool once if acquisition fails.
             if attempt == 0:
-                try:
-                    if db_pool:
-                        db_pool.closeall()
-                except Exception:
-                    pass
-                db_pool = None
-                DB_CONNECTION_LAST_USED.clear()
-                if not init_db_pool():
+                logger.warning("Connection acquisition failed. Recreating pool.")
+                if not init_db_pool(force=True):
                     break
             elif attempt < (max_attempts - 1):
                 time.sleep(DB_RETRY_BACKOFF_SECONDS[min(attempt + 1, len(DB_RETRY_BACKOFF_SECONDS) - 1)])
@@ -715,14 +723,6 @@ def execute_query(query, params=None, fetch=True):
 
             if transient_conn_issue and attempt < (max_attempts - 1):
                 # Refresh pool on transient transport-level errors before retrying.
-                try:
-                    if db_pool:
-                        db_pool.closeall()
-                except Exception:
-                    pass
-                db_pool = None
-                DB_CONNECTION_LAST_USED.clear()
-
                 # Drop stale connection reference so finally block does not
                 # return an unkeyed connection into a fresh pool instance.
                 try:
@@ -731,17 +731,17 @@ def execute_query(query, params=None, fetch=True):
                     pass
                 conn = None
 
-                init_db_pool()
-                backoff_seconds = DB_RETRY_BACKOFF_SECONDS[min(attempt + 1, len(DB_RETRY_BACKOFF_SECONDS) - 1)]
-                if backoff_seconds > 0:
-                    time.sleep(backoff_seconds)
-
                 logger.warning(
-                    "Transient DB connection issue detected. Retrying query (%s/%s). Error: %s",
+                    "Transient DB connection issue detected. Recreating pool and retrying query (%s/%s). Error: %s",
                     attempt + 1,
                     max_attempts,
                     e
                 )
+                
+                init_db_pool(force=True)
+                backoff_seconds = DB_RETRY_BACKOFF_SECONDS[min(attempt + 1, len(DB_RETRY_BACKOFF_SECONDS) - 1)]
+                if backoff_seconds > 0:
+                    time.sleep(backoff_seconds)
                 continue
 
             logger.error(f"Database query error: {e}")
@@ -1644,6 +1644,3 @@ if __name__ == '__main__':
     # Enable debug mode and auto-reload for development
     debug_mode = os.getenv('FLASK_ENV') == 'development' or os.getenv('NODE_ENV') == 'development'
     app.run(host='0.0.0.0', port=PORT, debug=debug_mode, use_reloader=True, use_debugger=debug_mode)
-
-
-
