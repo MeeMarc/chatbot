@@ -56,23 +56,78 @@ function getAuthToken() {
     return localStorage.getItem('authToken') || null;
 }
 
+let hasHandledAuthFailure = false;
+
+function isAuthenticationError(statusCode, message = '') {
+    const normalizedMessage = String(message || '').toLowerCase();
+    const knownAuthMessage = (
+        normalizedMessage.includes('token expired') ||
+        normalizedMessage.includes('invalid token') ||
+        normalizedMessage.includes('access token required') ||
+        normalizedMessage.includes('not authenticated') ||
+        normalizedMessage.includes('unauthorized')
+    );
+
+    if (statusCode === 401 || statusCode === 403) {
+        return knownAuthMessage || !normalizedMessage;
+    }
+
+    return knownAuthMessage;
+}
+
+function clearAuthenticationState() {
+    localStorage.removeItem('authToken');
+    localStorage.removeItem('currentUser');
+    localStorage.removeItem('isLoggedIn');
+    sessionStorage.removeItem('currentUser');
+    sessionStorage.removeItem('isLoggedIn');
+    sessionStorage.removeItem('isGuest');
+}
+
+function handleAuthenticationFailure() {
+    if (isGuestMode() || hasHandledAuthFailure) {
+        return;
+    }
+
+    hasHandledAuthFailure = true;
+    clearAuthenticationState();
+    showToast({
+        type: 'warning',
+        title: 'Session Expired',
+        message: 'Your session expired. Please log in again.',
+        duration: 2000
+    });
+
+    setTimeout(() => {
+        window.location.href = '/login';
+    }, 700);
+}
+
 async function apiRequest(endpoint, options = {}) {
+    const { skipAuth, headers: customHeaders = {}, ...fetchOptions } = options;
     const token = getAuthToken();
-    if (!token && !options.skipAuth) {
+    if (!token && !skipAuth) {
         // For guest users, allow API calls without auth (they'll use localStorage)
         if (isGuestMode()) {
             throw new Error('Guest mode - using local storage');
         }
         // For authenticated users without token, throw error
-        throw new Error('Not authenticated');
+        const authError = new Error('Not authenticated');
+        authError.status = 401;
+        authError.isAuthError = true;
+        handleAuthenticationFailure();
+        throw authError;
     }
-    
+
+    const requestHeaders = {
+        'Content-Type': 'application/json',
+        ...(token && !skipAuth ? { 'Authorization': `Bearer ${token}` } : {}),
+        ...customHeaders
+    };
+
     const defaultOptions = {
-        headers: {
-            'Content-Type': 'application/json',
-            ...(token && !options.skipAuth ? { 'Authorization': `Bearer ${token}` } : {})
-        },
-        ...options
+        ...fetchOptions,
+        headers: requestHeaders
     };
     
     try {
@@ -92,11 +147,23 @@ async function apiRequest(endpoint, options = {}) {
             const backendError = String(data?.error || '').trim();
             const statusInfo = `HTTP ${response.status}`;
             const message = backendError || `${statusInfo}: API request failed`;
-            throw new Error(message);
+            const authError = !skipAuth && isAuthenticationError(response.status, message);
+
+            if (authError) {
+                handleAuthenticationFailure();
+            }
+
+            const requestError = new Error(message);
+            requestError.status = response.status;
+            requestError.isAuthError = authError;
+            throw requestError;
         }
 
         return data;
     } catch (error) {
+        if (error && error.isAuthError) {
+            throw error;
+        }
         console.error('API request error:', error);
         throw error;
     }
@@ -220,7 +287,10 @@ document.addEventListener('DOMContentLoaded', function() {
         try {
             await checkAuthentication();
         } catch (error) {
-            console.error('❌ Error in checkAuthentication:', error);
+            console.error('Error in checkAuthentication:', error);
+            if (error && error.isAuthError) {
+                return;
+            }
             // Still show chat UI even if auth check fails
             const chat = document.getElementById('chat');
             if (chat) chat.style.display = 'flex';
@@ -286,7 +356,7 @@ function getStorage() {
 }
 
 // Authentication Functions (for chat.html only)
-function checkAuthentication() {
+async function checkAuthentication() {
     const currentUser = getCurrentUser();
     const isLoggedIn = localStorage.getItem('isLoggedIn') || sessionStorage.getItem('isLoggedIn');
     
@@ -298,6 +368,19 @@ function checkAuthentication() {
     
     // User is logged in, initialize chat interface
     const user = currentUser;
+
+    // Verify token with backend for authenticated users before loading chat data.
+    if (!user.isGuest) {
+        try {
+            await apiRequest('/api/auth/verify', { method: 'GET' });
+        } catch (error) {
+            if (error && error.isAuthError) {
+                return;
+            }
+            throw error;
+        }
+    }
+
     const usernameElement = document.getElementById('current-username');
     const usernameShortElement = document.getElementById('current-username-short');
     const usernameFullElement = document.getElementById('current-username-full');
@@ -684,8 +767,12 @@ async function loadConversations() {
         }));
         console.log(`✅ Loaded ${conversations.length} conversation(s) from database`);
     } catch (error) {
-        console.error('❌ Error loading conversations from database:', error);
         conversations = [];
+        if (error && error.isAuthError) {
+            console.info('Authentication required while loading conversations. Redirecting to login.');
+            return;
+        }
+        console.error('Error loading conversations from database:', error);
         // Fallback to localStorage if API fails
         const storage = getStorage();
         const userEmail = currentUser.email || 'default';
@@ -747,6 +834,19 @@ function createNewConversation() {
     return null; // No conversation ID until first message
 }
 
+function switchToBlankConversationView() {
+    currentConversationId = null;
+    conversationHistory = [];
+
+    const messages = document.getElementById('messages');
+    if (messages) {
+        messages.innerHTML = '';
+    }
+
+    toggleWelcomeMessage();
+    renderConversationsList();
+}
+
 async function createNewConversationOnFirstMessage() {
     // For guest users, create local conversation
     if (isGuestMode()) {
@@ -793,6 +893,9 @@ async function createNewConversationOnFirstMessage() {
         
         return data.id;
     } catch (error) {
+        if (error && error.isAuthError) {
+            return null;
+        }
         console.error('❌ Error creating conversation:', error);
         // Fallback to local conversation if API fails
         const conversationId = 'conv_' + Date.now();
@@ -1171,8 +1274,11 @@ async function loadConversation(conversationId) {
 }
 
 async function deleteConversation(conversationId, event) {
-    event.stopPropagation();
-    
+    if (event) {
+        event.stopPropagation();
+    }
+
+    const wasCurrentConversation = currentConversationId === conversationId;
     const confirmed = await showConfirmModal({
         icon: '🗑️',
         title: 'Delete Conversation',
@@ -1181,86 +1287,78 @@ async function deleteConversation(conversationId, event) {
         cancelText: 'Cancel',
         type: 'danger'
     });
-    
+
     if (!confirmed) return;
-    
-    // Ensure modal is closed
+
     const modal = document.getElementById('confirmation-modal');
     if (modal) {
         modal.style.display = 'none';
     }
-    
-    // For guest users, delete locally
+
     if (isGuestMode()) {
         conversations = conversations.filter(c => c.id !== conversationId);
         saveConversations();
-        
-        if (currentConversationId === conversationId) {
-            currentConversationId = null;
-            conversationHistory = [];
-            const messages = document.getElementById('messages');
-            if (messages) {
-                messages.innerHTML = '';
-            }
+
+        if (wasCurrentConversation) {
+            switchToBlankConversationView();
+            showToast({ type: 'success', title: 'Deleted', message: 'Current chat deleted. You are now in a new chat.' });
+        } else {
+            renderConversationsList();
             toggleWelcomeMessage();
+            showToast({ type: 'success', title: 'Deleted', message: 'Conversation deleted from history.' });
         }
-        
-        renderConversationsList();
-        toggleWelcomeMessage();
-        showToast({ type: 'success', title: 'Deleted', message: 'Conversation deleted successfully.' });
         return;
     }
-    
-    // For authenticated users, delete from database
+
     try {
-        console.log('🗑️ Deleting conversation from database:', conversationId);
         const response = await apiRequest(`/api/conversations/${conversationId}`, { method: 'DELETE' });
-        
-        if (response && response.success) {
-            console.log('✅ Conversation deleted from database successfully');
-            
-            // Remove from local array
-            conversations = conversations.filter(c => c.id !== conversationId);
-            
-            // Clear current conversation if it was the deleted one
-            if (currentConversationId === conversationId) {
-                currentConversationId = null;
-                conversationHistory = [];
-                const messages = document.getElementById('messages');
-                if (messages) {
-                    messages.innerHTML = '';
-                }
-                toggleWelcomeMessage();
-            }
-            
-            // Reload conversations from database to ensure sync
-            await loadConversations();
-            renderConversationsList();
-            toggleWelcomeMessage();
-            showToast({ type: 'success', title: 'Deleted', message: 'Conversation deleted successfully from database.' });
-        } else {
+        if (!response || !response.success) {
             throw new Error('Delete response was not successful');
         }
-    } catch (error) {
-        console.error('❌ Error deleting conversation from database:', error);
-        
-        // Try to provide more specific error message
-        let errorMessage = 'Failed to delete conversation. Please try again.';
-        if (error.message && error.message.includes('Not authenticated')) {
-            errorMessage = 'You must be logged in to delete conversations.';
-        } else if (error.message && error.message.includes('not found')) {
-            errorMessage = 'Conversation not found in database.';
-        }
-        
-        showToast({ type: 'error', title: 'Delete Failed', message: errorMessage });
-        
-        // Still try to remove from local view if it exists
-        const wasInLocal = conversations.some(c => c.id === conversationId);
-        if (wasInLocal) {
-            conversations = conversations.filter(c => c.id !== conversationId);
+
+        conversations = conversations.filter(c => c.id !== conversationId);
+        await loadConversations();
+
+        if (wasCurrentConversation) {
+            switchToBlankConversationView();
+            showToast({ type: 'success', title: 'Deleted', message: 'Current chat deleted. You are now in a new chat.' });
+        } else {
             renderConversationsList();
-            console.warn('⚠️ Removed from local view, but database delete failed');
+            toggleWelcomeMessage();
+            showToast({ type: 'success', title: 'Deleted', message: 'Conversation deleted from history.' });
         }
+    } catch (error) {
+        const isAuthError = Boolean(error && error.isAuthError);
+        if (isAuthError) {
+            return;
+        }
+
+        const isNotFoundError = Boolean(
+            error && (
+                error.status === 404 ||
+                (error.message && error.message.toLowerCase().includes('not found'))
+            )
+        );
+
+        if (isNotFoundError) {
+            const wasInLocal = conversations.some(c => c.id === conversationId);
+            if (wasInLocal) {
+                conversations = conversations.filter(c => c.id !== conversationId);
+            }
+
+            if (wasCurrentConversation) {
+                switchToBlankConversationView();
+                showToast({ type: 'warning', title: 'Already Deleted', message: 'Conversation was already removed. You are now in a new chat.' });
+            } else {
+                renderConversationsList();
+                toggleWelcomeMessage();
+                showToast({ type: 'warning', title: 'Already Deleted', message: 'Conversation was already removed.' });
+            }
+            return;
+        }
+
+        console.error('Delete conversation failed:', error);
+        showToast({ type: 'error', title: 'Delete Failed', message: 'Failed to delete conversation. Please try again.' });
     }
 }
 

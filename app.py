@@ -18,6 +18,7 @@ import jwt
 import bcrypt
 from datetime import datetime, timedelta, timezone
 import logging
+from functools import wraps
 
 # Load environment variables
 load_dotenv()
@@ -821,20 +822,28 @@ def verify_token(token):
 
 def authenticate_token(f):
     """Decorator to verify JWT token"""
+    @wraps(f)
     def decorated_function(*args, **kwargs):
-        auth_header = request.headers.get('Authorization')
+        auth_header = request.headers.get('Authorization', '')
         if not auth_header:
             return jsonify({'error': 'Access token required'}), 401
-        
+
+        parts = auth_header.split(' ', 1)
+        if len(parts) != 2 or parts[0].lower() != 'bearer' or not parts[1].strip():
+            return jsonify({'error': 'Invalid authorization header'}), 401
+
         try:
-            token = auth_header.split(' ')[1]  # Remove 'Bearer ' prefix
+            token = parts[1].strip()
             user = verify_token(token)
-            request.user = user
-            return f(*args, **kwargs)
         except Exception as e:
-            return jsonify({'error': str(e)}), 403
-    
-    decorated_function.__name__ = f.__name__
+            error_message = str(e)
+            if error_message in ('Token expired', 'Invalid token'):
+                return jsonify({'error': error_message}), 401
+            return jsonify({'error': error_message}), 403
+
+        request.user = user
+        return f(*args, **kwargs)
+
     return decorated_function
 
 # ========================================
