@@ -11,11 +11,15 @@ let isGeneratingResponse = false;
 let abortController = null; // For canceling AI requests
 const BATCH_DELAY = 500; // Wait 500ms after last message before responding (allows multiple rapid messages to batch together)
 const LOW_QUOTA_MODE = false;
-const AI_BACKEND_REQUEST_TIMEOUT_MS = LOW_QUOTA_MODE ? 12000 : 18000;
-const MAX_CONTEXT_TURNS = LOW_QUOTA_MODE ? 4 : 10;
-const AI_STRICT_CORRECTION_PASSES = LOW_QUOTA_MODE ? 0 : 2;
+const AI_BACKEND_REQUEST_TIMEOUT_MS = LOW_QUOTA_MODE ? 30000 : 45000;
+const MAX_CONTEXT_TURNS = LOW_QUOTA_MODE ? 6 : 12;
+const AI_STRICT_CORRECTION_PASSES = LOW_QUOTA_MODE ? 1 : 2;
+const AI_REPAIR_PASSES = LOW_QUOTA_MODE ? 1 : 2;
 const AI_RESPONSE_CACHE_TTL_MS = LOW_QUOTA_MODE ? 90000 : 30000;
 const AI_RESPONSE_CACHE_MAX_ENTRIES = LOW_QUOTA_MODE ? 40 : 20;
+const GENERAL_RESPONSE_MAX_OUTPUT_TOKENS = LOW_QUOTA_MODE ? 1024 : 2048;
+const STRUCTURED_RESPONSE_MAX_OUTPUT_TOKENS = LOW_QUOTA_MODE ? 1536 : 4096;
+const REPAIR_RESPONSE_MAX_OUTPUT_TOKENS = LOW_QUOTA_MODE ? 1536 : 3072;
 const aiResponseCache = new Map();
 const LEGACY_BROWSER_KEY_STORAGE_KEYS = [
     'gemini_api_keys_global',
@@ -2136,13 +2140,32 @@ function getCachedAIResponse(cacheKey) {
         aiResponseCache.delete(cacheKey);
         return null;
     }
-    return cached.text || null;
+    if (cached.response && typeof cached.response.text === 'string') {
+        return cached.response;
+    }
+    if (typeof cached.text === 'string') {
+        return {
+            text: cached.text,
+            truncated: Boolean(cached.truncated),
+            finishReason: String(cached.finishReason || '')
+        };
+    }
+    return null;
 }
 
-function setCachedAIResponse(cacheKey, text) {
+function setCachedAIResponse(cacheKey, responsePayload) {
+    const normalizedResponse = {
+        text: String(responsePayload?.text || '').trim(),
+        truncated: Boolean(responsePayload?.truncated),
+        finishReason: String(responsePayload?.finishReason || '')
+    };
+    if (!normalizedResponse.text) {
+        return;
+    }
+
     const now = Date.now();
     aiResponseCache.set(cacheKey, {
-        text,
+        response: normalizedResponse,
         expiresAt: now + AI_RESPONSE_CACHE_TTL_MS
     });
     cleanupAIResponseCache(now);
@@ -2354,6 +2377,53 @@ function countNumberedItems(text) {
     return inlineMatches ? inlineMatches.length : 0;
 }
 
+function looksLikeIncompleteAIReply(text) {
+    const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!normalized) return true;
+
+    if (/[.!?…]["')\]”’]*$/u.test(normalized)) {
+        return false;
+    }
+
+    if (/[\p{Extended_Pictographic}\u2600-\u27BF]["')\]”’]*$/u.test(normalized)) {
+        return false;
+    }
+
+    const words = normalized.split(' ').filter(Boolean);
+    if (words.length <= 5 && normalized.length <= 40) {
+        return false;
+    }
+
+    if (/[,;:]\s*$/u.test(normalized)) {
+        return true;
+    }
+
+    const lastWordMatch = normalized.match(/([\p{L}]+)$/u);
+    const lastWord = lastWordMatch ? lastWordMatch[1].toLowerCase() : '';
+    const trailingFragmentWords = new Set([
+        'a', 'an', 'and', 'ang', 'at', 'because', 'bakit', 'but', 'dahil',
+        'din', 'for', 'how', 'if', 'kasi', 'kapag', 'kong', 'kung', 'mong',
+        'na', 'namin', 'natin', 'ng', 'niya', 'nila', 'of', 'or', 'para',
+        'pero', 'rin', 'sa', 'so', 'that', 'the', 'to', 'when', 'while', 'with'
+    ]);
+
+    if (trailingFragmentWords.has(lastWord)) {
+        return true;
+    }
+
+    if (lastWord && lastWord.length <= 4 && words.length >= 10) {
+        return true;
+    }
+
+    const openingBrackets = (normalized.match(/[\(\[\{]/g) || []).length;
+    const closingBrackets = (normalized.match(/[\)\]\}]/g) || []).length;
+    if (openingBrackets > closingBrackets) {
+        return true;
+    }
+
+    return false;
+}
+
 function buildTaskFulfillmentDirective(latestUserMessage, detectedLanguage, constraint) {
     const asksForConcreteLanguageItems = Boolean(constraint?.asksForConcreteLanguageItems);
 
@@ -2380,16 +2450,16 @@ function buildTaskFulfillmentDirective(latestUserMessage, detectedLanguage, cons
     return `TASK MODE: General response.
 - Prioritize answering the user's exact request first.
 - Keep the whole reply in ${detectedLanguage}.
-- Be concise but complete.
+- Give enough detail to answer properly and finish the thought.
 - Never end mid-word or mid-sentence.`;
 }
 
 function getResponseGenerationConfig(constraint) {
     if (constraint?.count) {
-        const unitMultiplier = constraint.unit === 'sentences' ? 70 : 40;
+        const unitMultiplier = constraint.unit === 'sentences' ? 110 : 70;
         const maxOutputTokens = Math.max(
-            LOW_QUOTA_MODE ? 180 : 700,
-            Math.min(LOW_QUOTA_MODE ? 220 : 2400, constraint.count * unitMultiplier)
+            STRUCTURED_RESPONSE_MAX_OUTPUT_TOKENS,
+            Math.min(LOW_QUOTA_MODE ? 2048 : 6144, constraint.count * unitMultiplier)
         );
         return {
             temperature: 0.45,
@@ -2401,7 +2471,7 @@ function getResponseGenerationConfig(constraint) {
     if (constraint?.asksForConcreteLanguageItems) {
         return {
             temperature: 0.5,
-            maxOutputTokens: LOW_QUOTA_MODE ? 220 : 900,
+            maxOutputTokens: STRUCTURED_RESPONSE_MAX_OUTPUT_TOKENS,
             topP: 0.9,
             topK: 32
         };
@@ -2409,7 +2479,7 @@ function getResponseGenerationConfig(constraint) {
 
     return {
         temperature: 0.75,
-        maxOutputTokens: LOW_QUOTA_MODE ? 180 : 300,
+        maxOutputTokens: GENERAL_RESPONSE_MAX_OUTPUT_TOKENS,
         topP: 0.95,
         topK: 40
     };
@@ -2422,16 +2492,16 @@ async function callBackendAIGenerate(prompt, generationConfig = {}, options = {}
         preferredModel: preferredModel,
         generationConfig: {
             temperature: generationConfig.temperature ?? 0.9,
-            maxOutputTokens: generationConfig.maxOutputTokens ?? (LOW_QUOTA_MODE ? 180 : 300),
+            maxOutputTokens: generationConfig.maxOutputTokens ?? GENERAL_RESPONSE_MAX_OUTPUT_TOKENS,
             topP: generationConfig.topP ?? 0.95,
             topK: generationConfig.topK ?? 40
         }
     };
     const cacheKey = buildAIResponseCacheKey(payload);
     if (!options.signal?.aborted) {
-        const cachedText = getCachedAIResponse(cacheKey);
-        if (cachedText) {
-            return cachedText;
+        const cachedResponse = getCachedAIResponse(cacheKey);
+        if (cachedResponse) {
+            return cachedResponse;
         }
     }
 
@@ -2459,8 +2529,13 @@ async function callBackendAIGenerate(prompt, generationConfig = {}, options = {}
             if (!text) {
                 throw new Error('Invalid AI response from backend');
             }
-            setCachedAIResponse(cacheKey, text);
-            return text;
+            const normalizedResponse = {
+                text,
+                truncated: Boolean(response?.truncated),
+                finishReason: String(response?.finishReason || '')
+            };
+            setCachedAIResponse(cacheKey, normalizedResponse);
+            return normalizedResponse;
         } catch (error) {
             if (error.name === 'AbortError') {
                 if (options.signal?.aborted) {
@@ -2533,7 +2608,7 @@ async function generateAIResponse(combinedMessage, originalMessages = null) {
     const compactSystemPrompt = `${RESTRICTION}
 
 You are a warm, empathetic emotional wellness companion.
-- Keep replies concise and useful (2-4 sentences unless the user asks for a list/count).
+- Give complete replies with enough detail to answer properly.
 - Prioritize the user's exact request and avoid filler.
 - Keep language natural and supportive.
 
@@ -2549,7 +2624,7 @@ You are Your Personal Guide for Emotional Well-being. You are a friendly, empath
 - Use emojis naturally and expressively to convey emotions and warmth
 - Share practical advice, insights, or encouragement when helpful
 - Be thoughtful, understanding, and patient in your responses
-- Keep responses concise but meaningful (2-4 sentences typically)
+- Match the depth of the reply to the user's need and fully complete the answer
 - Balance support with gentle guidance - know when to listen and when to offer perspective
 - Use conversational, natural language like talking to a trusted friend
 - Show genuine care and understanding - be empathetic, hopeful, and compassionate
@@ -2570,9 +2645,10 @@ ${INSTRUCTIONS}`;
 
     abortController = new AbortController();
     try {
-        let aiResponse = await callBackendAIGenerate(prompt, generationConfig, {
+        let aiResponseResult = await callBackendAIGenerate(prompt, generationConfig, {
             signal: abortController.signal
         });
+        let aiResponse = aiResponseResult.text;
 
         // If user asked for an exact count and response misses it, run strict correction passes.
         if (requestConstraint?.count) {
@@ -2588,20 +2664,57 @@ ${INSTRUCTIONS}`;
 - Ensure all items are complete and not cut off.
 - Do not stop until item ${requestConstraint.count} is provided.\n\nUser request:\n${latestUserMessage}\n\nAssistant:`;
 
-                aiResponse = await callBackendAIGenerate(correctionPrompt, {
+                aiResponseResult = await callBackendAIGenerate(correctionPrompt, {
                     ...generationConfig,
                     temperature: 0.25,
                     maxOutputTokens: Math.max(
-                        generationConfig.maxOutputTokens || 0,
+                        STRUCTURED_RESPONSE_MAX_OUTPUT_TOKENS,
                         requestConstraint.count * (requestConstraint.unit === 'sentences' ? 110 : 65)
                     )
                 }, {
                     signal: abortController.signal
                 });
+                aiResponse = aiResponseResult.text;
 
                 actualCount = countNumberedItems(aiResponse);
                 correctionAttempt += 1;
             }
+        }
+
+        let repairAttempt = 0;
+        while (
+            repairAttempt < AI_REPAIR_PASSES &&
+            (aiResponseResult.truncated || looksLikeIncompleteAIReply(aiResponse))
+        ) {
+            const repairPrompt = `${systemPrompt}\n\n${turnLanguageDirective}\n\nREPAIR MODE:
+- The draft assistant reply below was cut off before it finished.
+- Rewrite it as one complete final reply in ${detectedLanguage}.
+- Preserve the same intent, tone, and empathy.
+- Finish the thought fully and answer properly.
+- Do not mention that the draft was cut off.
+- Do not repeat lines unnecessarily.
+- Return only the final assistant reply.
+\nTask requirements:\n${taskDirective}\n\nConversation history:\n${context}\n\nLatest user message:\n${latestUserMessage}\n\nCut-off draft reply:\n${aiResponse}\n\nFinal assistant reply:`;
+
+            const repairedResponse = await callBackendAIGenerate(repairPrompt, {
+                ...generationConfig,
+                temperature: 0.35,
+                maxOutputTokens: Math.max(
+                    REPAIR_RESPONSE_MAX_OUTPUT_TOKENS,
+                    generationConfig.maxOutputTokens || 0
+                )
+            }, {
+                signal: abortController.signal
+            });
+
+            const repairedText = String(repairedResponse?.text || '').trim();
+            if (!repairedText || repairedText === aiResponse) {
+                break;
+            }
+
+            aiResponseResult = repairedResponse;
+            aiResponse = repairedText;
+            repairAttempt += 1;
         }
 
         conversationHistory.push({ role: "assistant", content: aiResponse });

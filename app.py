@@ -128,24 +128,24 @@ GEMINI_TRANSIENT_COOLDOWN_SECONDS = max(2, _env_int("GEMINI_TRANSIENT_COOLDOWN_S
 
 if LOW_QUOTA_MODE:
     GEMINI_REQUEST_PASSES = max(1, _env_int("GEMINI_REQUEST_PASSES", 1))
-    GEMINI_MAX_PROMPT_CHARS = max(1200, _env_int("GEMINI_MAX_PROMPT_CHARS", 3000))
-    GEMINI_HTTP_TIMEOUT_SECONDS = max(4, _env_int("GEMINI_HTTP_TIMEOUT_SECONDS", 6))
-    GEMINI_REQUEST_DEADLINE_SECONDS = max(6, _env_int("GEMINI_REQUEST_DEADLINE_SECONDS", 8))
+    GEMINI_MAX_PROMPT_CHARS = max(3000, _env_int("GEMINI_MAX_PROMPT_CHARS", 6000))
+    GEMINI_HTTP_TIMEOUT_SECONDS = max(10, _env_int("GEMINI_HTTP_TIMEOUT_SECONDS", 20))
+    GEMINI_REQUEST_DEADLINE_SECONDS = max(15, _env_int("GEMINI_REQUEST_DEADLINE_SECONDS", 30))
     GEMINI_MAX_ATTEMPTS_PER_REQUEST = max(1, _env_int("GEMINI_MAX_ATTEMPTS_PER_REQUEST", 1))
     GEMINI_MODEL_FALLBACK_LIMIT = max(1, _env_int("GEMINI_MODEL_FALLBACK_LIMIT", 1))
     GEMINI_MAX_KEYS_PER_REQUEST = max(1, _env_int("GEMINI_MAX_KEYS_PER_REQUEST", 1))
-    GEMINI_MAX_OUTPUT_TOKENS = max(80, _env_int("GEMINI_MAX_OUTPUT_TOKENS", 220))
-    GEMINI_DEFAULT_OUTPUT_TOKENS = max(80, min(GEMINI_MAX_OUTPUT_TOKENS, _env_int("GEMINI_DEFAULT_OUTPUT_TOKENS", 180)))
+    GEMINI_MAX_OUTPUT_TOKENS = max(1024, _env_int("GEMINI_MAX_OUTPUT_TOKENS", 4096))
+    GEMINI_DEFAULT_OUTPUT_TOKENS = max(1024, min(GEMINI_MAX_OUTPUT_TOKENS, _env_int("GEMINI_DEFAULT_OUTPUT_TOKENS", 2048)))
 else:
     GEMINI_REQUEST_PASSES = max(1, _env_int("GEMINI_REQUEST_PASSES", 1))
-    GEMINI_MAX_PROMPT_CHARS = max(1200, _env_int("GEMINI_MAX_PROMPT_CHARS", 12000))
-    GEMINI_HTTP_TIMEOUT_SECONDS = max(4, _env_int("GEMINI_HTTP_TIMEOUT_SECONDS", 6))
-    GEMINI_REQUEST_DEADLINE_SECONDS = max(6, _env_int("GEMINI_REQUEST_DEADLINE_SECONDS", 10))
+    GEMINI_MAX_PROMPT_CHARS = max(6000, _env_int("GEMINI_MAX_PROMPT_CHARS", 18000))
+    GEMINI_HTTP_TIMEOUT_SECONDS = max(10, _env_int("GEMINI_HTTP_TIMEOUT_SECONDS", 20))
+    GEMINI_REQUEST_DEADLINE_SECONDS = max(15, _env_int("GEMINI_REQUEST_DEADLINE_SECONDS", 35))
     GEMINI_MAX_ATTEMPTS_PER_REQUEST = max(1, _env_int("GEMINI_MAX_ATTEMPTS_PER_REQUEST", 6))
     GEMINI_MODEL_FALLBACK_LIMIT = max(1, _env_int("GEMINI_MODEL_FALLBACK_LIMIT", 2))
     GEMINI_MAX_KEYS_PER_REQUEST = max(1, _env_int("GEMINI_MAX_KEYS_PER_REQUEST", 4))
-    GEMINI_MAX_OUTPUT_TOKENS = max(80, _env_int("GEMINI_MAX_OUTPUT_TOKENS", 2048))
-    GEMINI_DEFAULT_OUTPUT_TOKENS = max(80, min(GEMINI_MAX_OUTPUT_TOKENS, _env_int("GEMINI_DEFAULT_OUTPUT_TOKENS", 300)))
+    GEMINI_MAX_OUTPUT_TOKENS = max(2048, _env_int("GEMINI_MAX_OUTPUT_TOKENS", 8192))
+    GEMINI_DEFAULT_OUTPUT_TOKENS = max(1536, min(GEMINI_MAX_OUTPUT_TOKENS, _env_int("GEMINI_DEFAULT_OUTPUT_TOKENS", 3072)))
 
 
 def _clamp_float(value, default, minimum, maximum):
@@ -434,7 +434,13 @@ def call_gemini_generate(api_key, model, prompt, generation_config):
                         )
                         continue
 
-                return {"ok": True, "model": model, "text": best_text}
+                return {
+                    "ok": True,
+                    "model": model,
+                    "text": best_text,
+                    "finish_reason": best_finish_reason,
+                    "truncated": best_finish_reason == "MAX_TOKENS",
+                }
 
             if saw_safety_finish:
                 return {
@@ -941,7 +947,9 @@ def ai_generate():
                         return jsonify({
                             'text': result['text'],
                             'model': result['model'],
-                            'provider': 'gemini'
+                            'provider': 'gemini',
+                            'finishReason': result.get('finish_reason') or '',
+                            'truncated': bool(result.get('truncated')),
                         })
 
                     last_error = result.get('error') or last_error
