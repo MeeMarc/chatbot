@@ -10,8 +10,8 @@ let batchTimeout = null;
 let isGeneratingResponse = false;
 let abortController = null; // For canceling AI requests
 const BATCH_DELAY = 500; // Wait 500ms after last message before responding (allows multiple rapid messages to batch together)
-const AI_BACKEND_REQUEST_TIMEOUT_MS = 7000;
 const LOW_QUOTA_MODE = false;
+const AI_BACKEND_REQUEST_TIMEOUT_MS = LOW_QUOTA_MODE ? 12000 : 18000;
 const MAX_CONTEXT_TURNS = LOW_QUOTA_MODE ? 4 : 10;
 const AI_STRICT_CORRECTION_PASSES = LOW_QUOTA_MODE ? 0 : 2;
 const AI_RESPONSE_CACHE_TTL_MS = LOW_QUOTA_MODE ? 90000 : 30000;
@@ -162,6 +162,9 @@ async function apiRequest(endpoint, options = {}) {
         return data;
     } catch (error) {
         if (error && error.isAuthError) {
+            throw error;
+        }
+        if (error && error.name === 'AbortError') {
             throw error;
         }
         console.error('API request error:', error);
