@@ -15,11 +15,13 @@ const AI_BACKEND_REQUEST_TIMEOUT_MS = LOW_QUOTA_MODE ? 30000 : 45000;
 const MAX_CONTEXT_TURNS = LOW_QUOTA_MODE ? 6 : 12;
 const AI_STRICT_CORRECTION_PASSES = LOW_QUOTA_MODE ? 1 : 2;
 const AI_REPAIR_PASSES = LOW_QUOTA_MODE ? 1 : 2;
+const HIGH_RISK_SELF_HARM_EXTRA_REPAIR_PASSES = LOW_QUOTA_MODE ? 1 : 2;
 const AI_RESPONSE_CACHE_TTL_MS = LOW_QUOTA_MODE ? 90000 : 30000;
 const AI_RESPONSE_CACHE_MAX_ENTRIES = LOW_QUOTA_MODE ? 40 : 20;
 const GENERAL_RESPONSE_MAX_OUTPUT_TOKENS = LOW_QUOTA_MODE ? 1024 : 2048;
 const STRUCTURED_RESPONSE_MAX_OUTPUT_TOKENS = LOW_QUOTA_MODE ? 1536 : 4096;
 const REPAIR_RESPONSE_MAX_OUTPUT_TOKENS = LOW_QUOTA_MODE ? 1536 : 3072;
+const HIGH_RISK_SELF_HARM_RETRY_DELAYS_MS = LOW_QUOTA_MODE ? [0, 400] : [0, 350, 900];
 const aiResponseCache = new Map();
 const LEGACY_BROWSER_KEY_STORAGE_KEYS = [
     'gemini_api_keys_global',
@@ -1188,18 +1190,20 @@ async function loadConversation(conversationId) {
     
     // For guest users, use local messages
     if (isGuestMode()) {
+        const normalizedMessages = normalizeLoadedConversationMessages(conversation.messages || []);
+
         // Restore conversation history for AI context
-        conversationHistory = conversation.messages ? conversation.messages.map(m => ({
+        conversationHistory = normalizedMessages.map(m => ({
             role: m.role,
             content: m.content
-        })) : [];
+        }));
         
         // Render messages
         const messagesDiv = document.getElementById('messages');
         if (messagesDiv) {
             messagesDiv.innerHTML = '';
-            if (conversation.messages && conversation.messages.length > 0) {
-                conversation.messages.forEach(msg => {
+            if (normalizedMessages.length > 0) {
+                normalizedMessages.forEach(msg => {
                     if (msg.role === 'user') {
                         appendUser(msg.content, false, msg.timestamp || msg.createdAt);
                     } else {
@@ -1223,9 +1227,10 @@ async function loadConversation(conversationId) {
         
         // Update conversation with fetched data
         conversation.messages = data.messages || [];
+        const normalizedMessages = normalizeLoadedConversationMessages(conversation.messages);
         
         // Restore conversation history for AI context
-        conversationHistory = conversation.messages.map(m => ({
+        conversationHistory = normalizedMessages.map(m => ({
             role: m.role,
             content: m.content
         }));
@@ -1234,8 +1239,8 @@ async function loadConversation(conversationId) {
         const messagesDiv = document.getElementById('messages');
         if (messagesDiv) {
             messagesDiv.innerHTML = '';
-            if (conversation.messages.length > 0) {
-                conversation.messages.forEach(msg => {
+            if (normalizedMessages.length > 0) {
+                normalizedMessages.forEach(msg => {
                     if (msg.role === 'user') {
                         appendUser(msg.content, false, msg.createdAt);
                     } else {
@@ -1253,16 +1258,17 @@ async function loadConversation(conversationId) {
     } catch (error) {
         console.error('❌ Error loading conversation:', error);
         // Fallback to local messages if available
-        conversationHistory = conversation.messages ? conversation.messages.map(m => ({
+        const normalizedMessages = normalizeLoadedConversationMessages(conversation.messages || []);
+        conversationHistory = normalizedMessages.map(m => ({
             role: m.role,
             content: m.content
-        })) : [];
+        }));
         
         const messagesDiv = document.getElementById('messages');
         if (messagesDiv) {
             messagesDiv.innerHTML = '';
-            if (conversation.messages && conversation.messages.length > 0) {
-                conversation.messages.forEach(msg => {
+            if (normalizedMessages.length > 0) {
+                normalizedMessages.forEach(msg => {
                     if (msg.role === 'user') {
                         appendUser(msg.content, false, msg.timestamp || msg.createdAt);
                     } else {
@@ -1552,6 +1558,38 @@ function scrollToBottom() {
             messages.scrollTop = messages.scrollHeight;
         }
         scrollTimeout = null;
+    });
+}
+
+function normalizeLoadedConversationMessages(messages) {
+    if (!Array.isArray(messages)) return [];
+
+    let latestUserMessage = '';
+
+    return messages.map((message) => {
+        const normalizedMessage = {
+            ...message,
+            content: String(message?.content || '')
+        };
+
+        if (normalizedMessage.role === 'user') {
+            latestUserMessage = normalizedMessage.content;
+            return normalizedMessage;
+        }
+
+        if (
+            normalizedMessage.role === 'ai'
+            && latestUserMessage
+            && isHighRiskSelfHarmMessage(latestUserMessage)
+            && looksLikeIncompleteAIReply(normalizedMessage.content)
+        ) {
+            normalizedMessage.content = buildLocalFallbackReply(
+                latestUserMessage,
+                new Error('Historical incomplete AI reply.')
+            );
+        }
+
+        return normalizedMessage;
     });
 }
 
@@ -2256,6 +2294,32 @@ function buildUnsupportedLanguageNotice() {
     return "Sorry, I can only reply in Ilokano, Filipino, or English for now. I can't reply in that language/dialect yet.";
 }
 
+function isHighRiskSelfHarmMessage(userMessage) {
+    const message = String(userMessage || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    if (!message) return false;
+
+    const highRiskPatterns = [
+        /\b(end my life|ending my life|kill myself|take my own life|want to die|wanna die|wish i was dead|suicide|suicidal|hurt myself|harm myself|don't want to live|do not want to live|can't go on|cannot go on)\b/,
+        /\b(gusto ko nang mamatay|gusto kong mamatay|ayoko nang mabuhay|ayaw ko nang mabuhay|magpakamatay|gusto kong magpakamatay|wakasan ang buhay ko|saktan ang sarili ko|sasaktan ko ang sarili ko)\b/,
+        /\b(kayatko ti matay|kayatko a matay|kayatkon ti matay|agpapatay|papatayek ti bagik|dadaelek ti bagik)\b/
+    ];
+
+    return highRiskPatterns.some((pattern) => pattern.test(message));
+}
+
+function buildSelfHarmFallbackReply(userMessage) {
+    const language = detectFallbackLanguage(userMessage);
+
+    if (language === 'filipino') {
+        return 'Mahalaga ang kaligtasan mo ngayon. Humingi ka agad ng tulong sa totoong tao: tumawag sa emergency services o sa local crisis hotline ngayon din, at sabihin sa isang taong pinagkakatiwalaan mo na kailangan mo ng kasama ngayon. Kung kaya mo, ilayo muna ang anumang puwedeng gamitin sa pananakit at lumapit sa taong makakasama mo habang naghihintay ng tulong.';
+    }
+    if (language === 'ilokano') {
+        return 'Napateg ti kinatalgedmo ita. Mangala ka koma iti agar-aramid a tulong ita met laeng: umawag iti emergency services wenno lokal a crisis hotline, ken ibagam iti maysa a mapagkatalekam nga agkasapulka iti kaduam ita. No mabalin, iyadayo dagiti banag a mabalin nga usaren iti pannakadadael ti bagi ken agtalinaedka iti asideg ti sabali a tao bayat nga agurayka iti tulong.';
+    }
+
+    return 'Your safety matters right now. Please contact emergency services or your local crisis hotline now, and tell a trusted person near you that you need immediate support. If you can, move away from anything you could use to hurt yourself and stay with another person while you wait for help.';
+}
+
 function classifyAIError(error) {
     const message = String(error?.message || '').toLowerCase();
     if (!message) return 'generic';
@@ -2283,6 +2347,10 @@ function classifyAIError(error) {
 }
 
 function buildLocalFallbackReply(userMessage, error = null) {
+    if (isHighRiskSelfHarmMessage(userMessage)) {
+        return buildSelfHarmFallbackReply(userMessage);
+    }
+
     const language = detectFallbackLanguage(userMessage);
     const errorType = classifyAIError(error);
 
@@ -2377,6 +2445,64 @@ function countNumberedItems(text) {
     return inlineMatches ? inlineMatches.length : 0;
 }
 
+function normalizeComparableText(text) {
+    return String(text || '')
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}]+/gu, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function summarizeAssistantOpening(text, wordLimit = 12) {
+    const words = String(text || '').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+    if (words.length === 0) return '';
+    return words.slice(0, wordLimit).join(' ');
+}
+
+function buildAntiRepetitionDirective(latestUserMessage, previousTurns = []) {
+    const recentAssistantOpenings = previousTurns
+        .filter((turn) => turn && turn.role === 'assistant')
+        .slice(-3)
+        .map((turn) => summarizeAssistantOpening(turn.content))
+        .filter(Boolean);
+
+    const normalizedLatestMessage = normalizeComparableText(latestUserMessage);
+    const repeatedUserMessage = previousTurns
+        .filter((turn) => turn && turn.role === 'user')
+        .slice(-3)
+        .some((turn) => normalizeComparableText(turn.content) === normalizedLatestMessage);
+
+    const lines = [
+        'ANTI-REPETITION RULES:',
+        '- Do not reuse the same opening phrase, reassurance line, emoji pattern, or closing from recent assistant replies.',
+        '- Avoid default openings like "Oh no", "I am sorry to hear that", "It is okay to feel that way", or "I am here for you" when similar wording was used recently.'
+    ];
+
+    if (repeatedUserMessage) {
+        lines.push('- The user is repeating or revisiting the same feeling. Acknowledge it briefly, then move forward with a fresh angle, one different practical suggestion, or one new question.');
+    } else {
+        lines.push('- Use fresh wording and a different sentence structure so the reply does not sound copy-pasted.');
+    }
+
+    if (recentAssistantOpenings.length > 0) {
+        lines.push(`- Avoid recent assistant openings: ${recentAssistantOpenings.map((opening) => `"${opening}"`).join(' | ')}`);
+    }
+
+    return lines.join('\n');
+}
+
+function buildHighRiskSelfHarmDirective(detectedLanguage) {
+    return `HIGH-RISK SELF-HARM MODE:
+- This is a high-risk self-harm or suicide-related message.
+- Respond in ${detectedLanguage} with calm, clear, complete language.
+- Lead with direct concern, then urgently encourage the user to contact emergency services or a local crisis hotline now.
+- Tell the user to reach a trusted person nearby immediately and not stay alone if they may act on the urge.
+- Encourage moving away from anything they could use to hurt themselves.
+- Keep the reply complete, practical, and human.
+- Avoid filler, decorative sign-offs, and repetitive empathy scripts.
+- Do not end mid-sentence or with a vague unfinished thought.`;
+}
+
 function looksLikeIncompleteAIReply(text) {
     const normalized = String(text || '').replace(/\s+/g, ' ').trim();
     if (!normalized) return true;
@@ -2454,7 +2580,18 @@ function buildTaskFulfillmentDirective(latestUserMessage, detectedLanguage, cons
 - Never end mid-word or mid-sentence.`;
 }
 
-function getResponseGenerationConfig(constraint) {
+function getResponseGenerationConfig(constraint, options = {}) {
+    const isHighRiskMessage = options.isHighRiskMessage === true;
+
+    if (isHighRiskMessage) {
+        return {
+            temperature: 0.45,
+            maxOutputTokens: Math.max(REPAIR_RESPONSE_MAX_OUTPUT_TOKENS, GENERAL_RESPONSE_MAX_OUTPUT_TOKENS + 512),
+            topP: 0.9,
+            topK: 32
+        };
+    }
+
     if (constraint?.count) {
         const unitMultiplier = constraint.unit === 'sentences' ? 110 : 70;
         const maxOutputTokens = Math.max(
@@ -2487,6 +2624,7 @@ function getResponseGenerationConfig(constraint) {
 
 async function callBackendAIGenerate(prompt, generationConfig = {}, options = {}) {
     const preferredModel = localStorage.getItem('gemini_model') || 'gemini-2.5-flash';
+    const useCache = options.useCache !== false;
     const payload = {
         prompt: prompt,
         preferredModel: preferredModel,
@@ -2498,14 +2636,16 @@ async function callBackendAIGenerate(prompt, generationConfig = {}, options = {}
         }
     };
     const cacheKey = buildAIResponseCacheKey(payload);
-    if (!options.signal?.aborted) {
+    if (useCache && !options.signal?.aborted) {
         const cachedResponse = getCachedAIResponse(cacheKey);
         if (cachedResponse) {
             return cachedResponse;
         }
     }
 
-    const retryDelays = [0];
+    const retryDelays = Array.isArray(options.retryDelays) && options.retryDelays.length > 0
+        ? options.retryDelays
+        : [0];
     let lastError = null;
 
     for (let attempt = 0; attempt < retryDelays.length; attempt++) {
@@ -2534,7 +2674,9 @@ async function callBackendAIGenerate(prompt, generationConfig = {}, options = {}
                 truncated: Boolean(response?.truncated),
                 finishReason: String(response?.finishReason || '')
             };
-            setCachedAIResponse(cacheKey, normalizedResponse);
+            if (useCache) {
+                setCachedAIResponse(cacheKey, normalizedResponse);
+            }
             return normalizedResponse;
         } catch (error) {
             if (error.name === 'AbortError') {
@@ -2597,7 +2739,12 @@ async function generateAIResponse(combinedMessage, originalMessages = null) {
     const latestUserMessage = (originalMessages && originalMessages.length > 0)
         ? originalMessages[originalMessages.length - 1]
         : combinedMessage;
+    const newUserTurnCount = (originalMessages && originalMessages.length > 0)
+        ? originalMessages.length
+        : 1;
+    const previousConversationHistory = conversationHistory.slice(0, -newUserTurnCount);
     const detectedLanguage = detectFallbackLanguage(latestUserMessage);
+    const isHighRiskMessage = isHighRiskSelfHarmMessage(latestUserMessage);
     const requestConstraint = extractRequestedItemConstraint(latestUserMessage);
     if (detectedLanguage === 'unsupported') {
         const notice = buildUnsupportedLanguageNotice();
@@ -2634,19 +2781,25 @@ Your role is to be a reliable emotional support companion that helps users feel 
 ${INSTRUCTIONS}`;
     const systemPrompt = LOW_QUOTA_MODE ? compactSystemPrompt : richSystemPrompt;
     
-    const context = conversationHistory.slice(-MAX_CONTEXT_TURNS).map(m => 
+    const context = previousConversationHistory.slice(-MAX_CONTEXT_TURNS).map(m => 
         m.role === 'user' ? `User: ${m.content}` : `Assistant: ${m.content}`
     ).join('\n');
 
     const turnLanguageDirective = `CURRENT TURN LANGUAGE: Reply in ${detectedLanguage}. If the user asks to switch to Ilokano, Filipino, or English, switch immediately.`;
     const taskDirective = buildTaskFulfillmentDirective(latestUserMessage, detectedLanguage, requestConstraint);
-    const prompt = `${systemPrompt}\n\n${turnLanguageDirective}\n\n${taskDirective}\n\nConversation history:\n${context}\n\nUser: ${combinedMessage}\nAssistant:`;
-    const generationConfig = getResponseGenerationConfig(requestConstraint);
+    const antiRepetitionDirective = buildAntiRepetitionDirective(latestUserMessage, previousConversationHistory);
+    const highRiskDirective = isHighRiskMessage ? buildHighRiskSelfHarmDirective(detectedLanguage) : '';
+    const useResponseCache = Boolean(requestConstraint?.asksForConcreteLanguageItems);
+    const prompt = `${systemPrompt}\n\n${turnLanguageDirective}\n\n${taskDirective}${highRiskDirective ? `\n\n${highRiskDirective}` : ''}\n\n${antiRepetitionDirective}\n\nConversation history:\n${context || '[No previous conversation]'}\n\nUser: ${combinedMessage}\nAssistant:`;
+    const generationConfig = getResponseGenerationConfig(requestConstraint, { isHighRiskMessage });
+    const requestRetryDelays = isHighRiskMessage ? HIGH_RISK_SELF_HARM_RETRY_DELAYS_MS : [0];
 
     abortController = new AbortController();
     try {
         let aiResponseResult = await callBackendAIGenerate(prompt, generationConfig, {
-            signal: abortController.signal
+            signal: abortController.signal,
+            useCache: useResponseCache,
+            retryDelays: requestRetryDelays
         });
         let aiResponse = aiResponseResult.text;
 
@@ -2672,7 +2825,9 @@ ${INSTRUCTIONS}`;
                         requestConstraint.count * (requestConstraint.unit === 'sentences' ? 110 : 65)
                     )
                 }, {
-                    signal: abortController.signal
+                    signal: abortController.signal,
+                    useCache: useResponseCache,
+                    retryDelays: requestRetryDelays
                 });
                 aiResponse = aiResponseResult.text;
 
@@ -2682,11 +2837,12 @@ ${INSTRUCTIONS}`;
         }
 
         let repairAttempt = 0;
+        const maxRepairPasses = AI_REPAIR_PASSES + (isHighRiskMessage ? HIGH_RISK_SELF_HARM_EXTRA_REPAIR_PASSES : 0);
         while (
-            repairAttempt < AI_REPAIR_PASSES &&
+            repairAttempt < maxRepairPasses &&
             (aiResponseResult.truncated || looksLikeIncompleteAIReply(aiResponse))
         ) {
-            const repairPrompt = `${systemPrompt}\n\n${turnLanguageDirective}\n\nREPAIR MODE:
+            const repairPrompt = `${systemPrompt}\n\n${turnLanguageDirective}${highRiskDirective ? `\n\n${highRiskDirective}` : ''}\n\nREPAIR MODE:
 - The draft assistant reply below was cut off before it finished.
 - Rewrite it as one complete final reply in ${detectedLanguage}.
 - Preserve the same intent, tone, and empathy.
@@ -2704,7 +2860,9 @@ ${INSTRUCTIONS}`;
                     generationConfig.maxOutputTokens || 0
                 )
             }, {
-                signal: abortController.signal
+                signal: abortController.signal,
+                useCache: useResponseCache,
+                retryDelays: requestRetryDelays
             });
 
             const repairedText = String(repairedResponse?.text || '').trim();
@@ -2715,6 +2873,42 @@ ${INSTRUCTIONS}`;
             aiResponseResult = repairedResponse;
             aiResponse = repairedText;
             repairAttempt += 1;
+        }
+
+        if (isHighRiskMessage && (aiResponseResult.truncated || looksLikeIncompleteAIReply(aiResponse))) {
+            const crisisRecoveryPrompt = `${systemPrompt}\n\n${turnLanguageDirective}\n\n${highRiskDirective}\n\nFINAL CRISIS RECOVERY MODE:
+- Write one complete final reply in ${detectedLanguage}.
+- Be direct, supportive, and urgent.
+- Encourage immediate contact with emergency services or a local crisis hotline now.
+- Tell the user to contact a trusted person nearby right away and not stay alone if they may act on the urge.
+- Do not repeat the earlier draft.
+- Do not stop mid-sentence.
+\nConversation history:\n${context || '[No previous conversation]'}\n\nLatest user message:\n${latestUserMessage}\n\nAssistant:`;
+
+            const recoveredResponse = await callBackendAIGenerate(crisisRecoveryPrompt, {
+                ...generationConfig,
+                temperature: 0.35,
+                maxOutputTokens: Math.max(REPAIR_RESPONSE_MAX_OUTPUT_TOKENS, generationConfig.maxOutputTokens || 0)
+            }, {
+                signal: abortController.signal,
+                useCache: false,
+                retryDelays: requestRetryDelays
+            });
+
+            const recoveredText = String(recoveredResponse?.text || '').trim();
+            if (recoveredText) {
+                aiResponseResult = recoveredResponse;
+                aiResponse = recoveredText;
+            }
+        }
+
+        if (aiResponseResult.truncated || looksLikeIncompleteAIReply(aiResponse)) {
+            const fallbackReply = buildLocalFallbackReply(
+                latestUserMessage,
+                new Error('Incomplete AI reply after repair attempts.')
+            );
+            conversationHistory.push({ role: "assistant", content: fallbackReply });
+            return fallbackReply;
         }
 
         conversationHistory.push({ role: "assistant", content: aiResponse });
