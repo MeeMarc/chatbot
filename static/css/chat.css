@@ -212,11 +212,6 @@ body.dark-mode .container::before {
     transform: translateY(0);
 }
 
-.menu-btn.guest-new-chat-btn {
-    font-weight: 600;
-    white-space: nowrap;
-}
-
 /* User Menu */
 .user-menu {
     position: absolute;

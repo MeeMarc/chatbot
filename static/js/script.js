@@ -386,19 +386,15 @@ function updateConversationControlsForUser(user) {
     if (!conversationButton) return;
 
     if (isGuestUser) {
-        conversationButton.textContent = '+ New Chat';
-        conversationButton.title = 'New Chat';
-        conversationButton.setAttribute('aria-label', 'New Chat');
-        conversationButton.setAttribute('onclick', 'newChat()');
-        conversationButton.classList.add('guest-new-chat-btn');
+        conversationButton.style.display = 'none';
         return;
     }
 
+    conversationButton.style.display = '';
     conversationButton.textContent = '💬';
     conversationButton.title = 'Conversations';
     conversationButton.setAttribute('aria-label', 'Conversations');
     conversationButton.setAttribute('onclick', 'toggleConversationsSidebar()');
-    conversationButton.classList.remove('guest-new-chat-btn');
 }
 
 // Authentication Functions (for chat.html only)
