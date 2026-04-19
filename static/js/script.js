@@ -364,6 +364,41 @@ function getStorage() {
     return isGuestMode() ? sessionStorage : localStorage;
 }
 
+function clearGuestConversationHistory() {
+    Object.keys(sessionStorage).forEach((key) => {
+        if (key.startsWith('conversations_')) {
+            sessionStorage.removeItem(key);
+        }
+    });
+    conversations = [];
+}
+
+function updateConversationControlsForUser(user) {
+    const conversationButton = document.getElementById('conversations-menu-btn');
+    const conversationsSidebar = document.getElementById('conversations-sidebar');
+    const isGuestUser = Boolean(user && user.isGuest);
+
+    if (conversationsSidebar && isGuestUser) {
+        conversationsSidebar.style.display = 'none';
+        conversationsSidebar.innerHTML = '';
+    }
+
+    if (!conversationButton) return;
+
+    if (isGuestUser) {
+        conversationButton.textContent = '✨';
+        conversationButton.title = 'New Chat';
+        conversationButton.setAttribute('aria-label', 'New Chat');
+        conversationButton.setAttribute('onclick', 'newChat()');
+        return;
+    }
+
+    conversationButton.textContent = '💬';
+    conversationButton.title = 'Conversations';
+    conversationButton.setAttribute('aria-label', 'Conversations');
+    conversationButton.setAttribute('onclick', 'toggleConversationsSidebar()');
+}
+
 // Authentication Functions (for chat.html only)
 async function checkAuthentication() {
     const currentUser = getCurrentUser();
@@ -414,6 +449,8 @@ async function checkAuthentication() {
             logoutBtn.classList.remove('guest-login');
         }
     }
+
+    updateConversationControlsForUser(user);
     
     // Always update status indicator immediately
     updateStatusIndicator();
@@ -735,32 +772,9 @@ async function loadConversations() {
         return;
     }
     
-    // For guest users, still use localStorage/sessionStorage
+    // Guest users do not keep chat history.
     if (isGuestMode()) {
-        const storage = getStorage();
-        const userEmail = currentUser.email || 'default';
-        const conversationsKey = `conversations_${userEmail}`;
-        const storedConversations = storage.getItem(conversationsKey);
-        
-        if (storedConversations) {
-            try {
-                conversations = JSON.parse(storedConversations);
-                if (!Array.isArray(conversations)) {
-                    conversations = [];
-                }
-                conversations.sort((a, b) => {
-                    const dateA = new Date(a.updatedAt || a.createdAt || 0);
-                    const dateB = new Date(b.updatedAt || b.createdAt || 0);
-                    return dateB - dateA;
-                });
-                console.log(`✅ Loaded ${conversations.length} conversation(s) for guest`);
-            } catch (error) {
-                console.error('❌ Error parsing conversations:', error);
-                conversations = [];
-            }
-        } else {
-            conversations = [];
-        }
+        clearGuestConversationHistory();
         return;
     }
     
@@ -799,25 +813,8 @@ async function loadConversations() {
 }
 
 function saveConversations() {
-    // For guest users, still use localStorage/sessionStorage
+    // Guest users do not keep chat history.
     if (isGuestMode()) {
-        const currentUser = getCurrentUser();
-        const storage = getStorage();
-        
-        if (!currentUser) {
-            console.warn('⚠️ No current user found when saving conversations');
-            return;
-        }
-        
-        const userEmail = currentUser.email || 'default';
-        const conversationsKey = `conversations_${userEmail}`;
-        
-        try {
-            storage.setItem(conversationsKey, JSON.stringify(conversations));
-            console.log(`✅ Saved ${conversations.length} conversation(s) for guest`);
-        } catch (error) {
-            console.error('❌ Error saving conversations:', error);
-        }
         return;
     }
     
@@ -857,25 +854,11 @@ function switchToBlankConversationView() {
 }
 
 async function createNewConversationOnFirstMessage() {
-    // For guest users, create local conversation
+    // Guest users can chat in the current view, but chats are not saved to history.
     if (isGuestMode()) {
-        const conversationId = 'conv_' + Date.now();
-        currentConversationId = conversationId;
-        
-        const newConversation = {
-            id: conversationId,
-            title: 'New Chat',
-            messages: [],
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-        };
-        
-        conversations.unshift(newConversation);
-        saveConversations();
-        renderConversationsList();
+        currentConversationId = 'guest_' + Date.now();
         toggleWelcomeMessage();
-        
-        return conversationId;
+        return currentConversationId;
     }
     
     // For authenticated users, create conversation in database
@@ -945,6 +928,7 @@ async function saveCurrentConversation() {
     }
     
     if (!currentConversationId) return; // No conversation yet, nothing to save
+    if (isGuestMode()) return;
     
     const conversation = conversations.find(c => c.id === currentConversationId);
     if (!conversation) return;
@@ -975,25 +959,7 @@ async function saveCurrentConversation() {
             };
         });
     
-    // For guest users, save locally
-    if (isGuestMode()) {
-        conversation.messages = domMessages;
-        conversation.updatedAt = new Date().toISOString();
-        
-        // Update title from first user message if still "New Chat"
-        if (conversation.title === 'New Chat' && conversation.messages.length > 0) {
-            const firstUserMessage = conversation.messages.find(m => m.role === 'user');
-            if (firstUserMessage) {
-                // For guest users, just use first 50 chars (no AI API call needed)
-                conversation.title = firstUserMessage.content.substring(0, 50) + (firstUserMessage.content.length > 50 ? '...' : '');
-            }
-        }
-        
-        saveConversations();
-        renderConversationsList();
-        return;
-    }
-    
+
     // For authenticated users, save to database
     // Compare with existing messages to find new ones to save
     const existingMessages = conversation.messages || [];
@@ -1378,6 +1344,12 @@ async function deleteConversation(conversationId, event) {
 function renderConversationsList() {
     const sidebar = document.getElementById('conversations-sidebar');
     if (!sidebar) return;
+
+    if (isGuestMode()) {
+        sidebar.innerHTML = '';
+        sidebar.style.display = 'none';
+        return;
+    }
     
     // Always show "New Chat" button at the top
     // If no conversations exist, show "No chat history" message
@@ -1486,6 +1458,10 @@ function formatTimestamp(date) {
 }
 
 function toggleConversationsSidebar() {
+    if (isGuestMode()) {
+        return;
+    }
+
     const sidebar = document.getElementById('conversations-sidebar');
     const chatActions = document.querySelector('.chat-actions');
     if (sidebar) {
@@ -2577,6 +2553,8 @@ function buildTaskFulfillmentDirective(latestUserMessage, detectedLanguage, cons
 - Prioritize answering the user's exact request first.
 - Keep the whole reply in ${detectedLanguage}.
 - Give enough detail to answer properly and finish the thought.
+- If the moment feels light, a gentle playful line or mild humor is okay.
+- Never use humor when the user sounds scared, overwhelmed, grieving, unsafe, or asks for serious help.
 - Never end mid-word or mid-sentence.`;
 }
 

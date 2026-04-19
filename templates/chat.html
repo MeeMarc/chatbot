@@ -15,7 +15,7 @@
         <!-- Compact Header -->
         <div class="header">
             <div class="header-left">
-                <button onclick="toggleConversationsSidebar()" class="menu-btn" title="Conversations">💬</button>
+                <button onclick="toggleConversationsSidebar()" class="menu-btn" id="conversations-menu-btn" title="Conversations">💬</button>
                 <a href="/" class="logo-link" title="Go to Homepage">
                     <h2>💙 Emotional AI Support</h2>
                 </a>
@@ -85,6 +85,14 @@
                                 <button onclick="toggleTipsPanel()" class="tips-close-btn" title="Close">&times;</button>
                             </div>
                             <div class="tips-buttons">
+                                <button onclick="sendQuick('I feel sad today')" class="tip-btn">
+                                    <span class="tip-emoji">&#x1F622;</span>
+                                    <span class="tip-label">Feeling Sad</span>
+                                </button>
+                                <button onclick="sendQuick('I feel scared right now')" class="tip-btn">
+                                    <span class="tip-emoji">&#x1F628;</span>
+                                    <span class="tip-label">Feeling Scared</span>
+                                </button>
                                 <button onclick="sendQuick('I feel stressed today')" class="tip-btn">
                                     <span class="tip-emoji">&#x1F61F;</span>
                                     <span class="tip-label">Feeling Stressed</span>
@@ -92,6 +100,10 @@
                                 <button onclick="sendQuick('I am heartbroken')" class="tip-btn">
                                     <span class="tip-emoji">&#x1F494;</span>
                                     <span class="tip-label">Heartbroken</span>
+                                </button>
+                                <button onclick="sendQuick('I feel lonely')" class="tip-btn">
+                                    <span class="tip-emoji">&#x1F97A;</span>
+                                    <span class="tip-label">Feeling Lonely</span>
                                 </button>
                                 <button onclick="sendQuick('I need motivation')" class="tip-btn">
                                     <span class="tip-emoji">&#x1F4AA;</span>
@@ -104,6 +116,14 @@
                                 <button onclick="sendQuick('I feel anxious')" class="tip-btn">
                                     <span class="tip-emoji">&#x1F628;</span>
                                     <span class="tip-label">Anxious</span>
+                                </button>
+                                <button onclick="sendQuick('I keep overthinking everything')" class="tip-btn">
+                                    <span class="tip-emoji">&#x1F92F;</span>
+                                    <span class="tip-label">Overthinking</span>
+                                </button>
+                                <button onclick="sendQuick('I feel angry and frustrated')" class="tip-btn">
+                                    <span class="tip-emoji">&#x1F624;</span>
+                                    <span class="tip-label">Angry / Frustrated</span>
                                 </button>
                             </div>
                         </div>
