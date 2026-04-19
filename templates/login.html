@@ -256,7 +256,7 @@
             localStorage.removeItem('currentUser');
             localStorage.removeItem('isLoggedIn');
             
-            showToast('success', 'Welcome Guest!', 'You can chat anonymously. Your history will be cleared when you close the browser.', 3000);
+            showToast('success', 'Welcome Guest!', 'You can chat anonymously. Guest chats are not saved in history.', 3000);
             
             // Redirect to chat after short delay
             setTimeout(() => {
