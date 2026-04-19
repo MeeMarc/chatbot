@@ -386,10 +386,11 @@ function updateConversationControlsForUser(user) {
     if (!conversationButton) return;
 
     if (isGuestUser) {
-        conversationButton.textContent = '✨';
+        conversationButton.textContent = '+ New Chat';
         conversationButton.title = 'New Chat';
         conversationButton.setAttribute('aria-label', 'New Chat');
         conversationButton.setAttribute('onclick', 'newChat()');
+        conversationButton.classList.add('guest-new-chat-btn');
         return;
     }
 
@@ -397,6 +398,7 @@ function updateConversationControlsForUser(user) {
     conversationButton.title = 'Conversations';
     conversationButton.setAttribute('aria-label', 'Conversations');
     conversationButton.setAttribute('onclick', 'toggleConversationsSidebar()');
+    conversationButton.classList.remove('guest-new-chat-btn');
 }
 
 // Authentication Functions (for chat.html only)
